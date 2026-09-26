@@ -59,24 +59,6 @@ springdoc:
     tagsSorter: alpha
     tryItOutEnabled: true
 
-cdm:
-  servicenow:
-    base-url: ${SERVICENOW_BASE_URL:https://example.service-now.com}
-    table: ${SERVICENOW_TABLE:cmdb_ci_certificate}
-    username: ${SERVICENOW_USERNAME:}
-    password: ${SERVICENOW_PASSWORD:}
-    client-id: ${SERVICENOW_CLIENT_ID:}
-    client-secret: ${SERVICENOW_CLIENT_SECRET:}
-    bearer-token: ${SERVICENOW_BEARER_TOKEN:}
-    connect-timeout-ms: ${SERVICENOW_CONNECT_TIMEOUT_MS:5000}
-    read-timeout-ms: ${SERVICENOW_READ_TIMEOUT_MS:10000}
-    max-retries: ${SERVICENOW_MAX_RETRIES:3}
-    backoff-ms: ${SERVICENOW_BACKOFF_MS:1000}
-    query-filter: ${SERVICENOW_QUERY_FILTER:active=true^ORDERBYDESCsys_updated_on}
-    page-size: ${SERVICENOW_PAGE_SIZE:100}
-    mock-enabled: ${SERVICENOW_MOCK_ENABLED:false}
-
 logging:
   pattern:
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n%wEx"
-
