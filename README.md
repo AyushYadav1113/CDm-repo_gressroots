@@ -59,23 +59,6 @@ com.grassroots.cdm
 │   ├── SystemStatusDto.java             # Diagnostic status payload
 │   ├── TargetServerDto.java             # Managed server view DTO
 │   └── ValidationError.java             # Constraint violation item
-├── discovery                            # Certificate discovery domain
-│   ├── DiscoveryService.java            # Discovery orchestration contract
-│   ├── impl/DiscoveryServiceImpl.java   # Production deduplication & upsert engine
-│   └── mapper/CertificateDiscoveryMapper.java # Domain mapping and status resolution
-├── dto                                  # Data Transfer Objects (Records & DTOs)
-│   ├── ApiResponse.java                 # Standard response wrapper
-│   ├── AuditLogDto.java                 # Audit log view DTO
-│   ├── CertificateInstallationDto.java  # Certificate installation view DTO
-│   ├── CertificateReplacementDto.java   # Certificate replacement match view DTO
-│   ├── CertificateSummaryDto.java       # Certificate view representation
-│   ├── DeploymentJobDto.java            # Deployment job view representation
-│   ├── DiscoveryResultDto.java          # Discovery outcome summary DTO
-│   ├── ErrorResponse.java               # RFC-7807 error envelope
-│   ├── MidServerDto.java                # MID server status & health view DTO
-│   ├── SystemStatusDto.java             # Diagnostic status payload
-│   ├── TargetServerDto.java             # Managed server view DTO
-│   └── ValidationError.java             # Constraint violation item
 ├── entity                               # JPA entities (Domain Model)
 │   ├── AuditLogRecord.java              # audit_logs table entity
 │   ├── BaseEntity.java                  # MappedSuperclass (UUID, version, audit timestamps)
@@ -108,27 +91,7 @@ com.grassroots.cdm
 │   ├── CyberArkVaultClient.java         # CyberArk credential retrieval contract
 │   ├── MidServerClient.java             # ServiceNow MID Server queue contract
 │   ├── SectigoClient.java               # Sectigo CA renewal contract
-│   ├── ServiceNowClient.java            # Legacy bridge interface
-│   └── servicenow                       # ServiceNow CMDB Integration Module
-│       ├── ServiceNowClient.java        # Modern HTTP client interface
-│       ├── ServiceNowIntegrationService.java # Isolated domain integration service
-│       ├── client/ServiceNowClientImpl.java  # Spring RestClient implementation
-│       ├── config/ServiceNowProperties.java  # Externalized config binding
-│       ├── dto                          # Table API DTOs & envelopes
-│       │   ├── ServiceNowCertificateDto.java
-│       │   ├── ServiceNowErrorResponse.java
-│       │   └── ServiceNowTableResponse.java
-│       ├── exception                    # Dedicated ServiceNow exception hierarchy
-│       │   ├── ServiceNowAuthenticationException.java
-│       │   ├── ServiceNowClientException.java
-│       │   ├── ServiceNowException.java
-│       │   ├── ServiceNowParseException.java
-│       │   ├── ServiceNowRateLimitException.java
-│       │   ├── ServiceNowServerException.java
-│       │   └── ServiceNowTimeoutException.java
-│       ├── mock/MockServiceNowClient.java    # Offline dev & test mock client
-│       ├── model/DiscoveredCertificateItem.java # Decoupled integration model
-│       └── service/ServiceNowIntegrationServiceImp.java
+│   └── ServiceNowClient.java            # ServiceNow CMDB discovery contract
 ├── matching                             # Certificate correlation engine
 │   ├── CertificateMatcher.java          # Matching strategy contract
 │   └── MatchResult.java                 # Match evaluation outcome
@@ -360,91 +323,6 @@ To run migrations locally:
 6. **Dynamic JSONB Columns for Metadata**:
    - `health_info` and `network_metadata` on `mid_servers`, `matching_reasons` on `certificate_replacements`, and `details` on `audit_logs` use PostgreSQL `JSONB` mapped via Hibernate `@JdbcTypeCode(SqlTypes.JSON)`.
    - Provides schema flexibility for arbitrary diagnostic payloads without table alterations.
-
----
-
-## ServiceNow Certificate Discovery Module
-
-The ServiceNow discovery module is responsible for inventorying SSL/TLS certificates discovered across the enterprise infrastructure (`cmdb_ci_certificate`) and synchronizing them into the CDM PostgreSQL repository with strict deduplication, in-place metadata updates, and tamper-evident audit trails.
-
-### 1. Discovery Architecture & Data Flow
-
-```mermaid
-flowchart TD
-    subgraph ServiceNow_Cloud [ServiceNow Cloud / On-Premise]
-        SN_TABLE[cmdb_ci_certificate Table API]
-    end
-
-    subgraph Transport_Layer [HTTP Transport Layer]
-        SNC[ServiceNowClient / ServiceNowClientImpl]
-        PROPS[ServiceNowProperties\nExternalized Credentials & Timeouts]
-        MOCK[MockServiceNowClient\nOffline Dev & Testing]
-        PROPS --> SNC
-    end
-
-    subgraph Integration_Layer [Integration & Mapping Boundary]
-        SNIS[ServiceNowIntegrationService]
-        MAPPER[CertificateDiscoveryMapper\nSanitizer & Date Parser]
-    end
-
-    subgraph Domain_Layer [Domain Orchestration & Persistence]
-        DS[DiscoveryService / DiscoveryServiceImpl]
-        REPO[(CertificateRecordRepository\nPostgreSQL)]
-        SERVER_REPO[(TargetServerRepository)]
-        INSTALL_REPO[(CertificateInstallationRepository)]
-        AUDIT[AuditService / PostgreSQL audit_logs]
-    end
-
-    SN_TABLE <-->|HTTPS RestClient\nBasic Auth / Bearer| SNC
-    SNC -->|ServiceNowCertificateDto| SNIS
-    MOCK -.->|Simulated Payloads| SNIS
-    SNIS -->|DiscoveredCertificateItem\nDecoupled Domain DTO| DS
-    DS --> MAPPER
-    MAPPER -->|CertificateRecord Entity| DS
-    DS -->|Upsert / Deduplicate| REPO
-    DS -->|Associate Host| SERVER_REPO
-    DS -->|Associate Binding| INSTALL_REPO
-    DS -->|Record Trace| AUDIT
-```
-
-### 2. Execution Pipeline & Key Features
-
-1. **Decoupled 4-Tier Architecture**:
-   - `ServiceNowClient`: Strictly handles HTTP transport, timeouts, rate limits, exponential backoff retries, and deserialization using modern Spring 6 `RestClient` and `JdkClientHttpRequestFactory`.
-   - `ServiceNowIntegrationService`: Validates data completeness, parses heterogeneous date formats, normalizes thumbprints, and maps to `DiscoveredCertificateItem` so that ServiceNow Table API JSON never leaks into the core domain layer.
-   - `DiscoveryService`: Orchestrates the discovery transaction, applies deduplication algorithms, updates existing certificates in place, links servers and installations, and records compliance audit trails.
-   - `CertificateRecordRepository`: PostgreSQL persistence layer.
-
-2. **Deduplication & In-Place Upsert**:
-   - Prevents duplicate certificate records during repeated discovery runs.
-   - Lookups evaluate in order:
-     1. External ServiceNow `sys_id`
-     2. SHA-256 / SHA-1 `thumbprint` (case-insensitive)
-     3. Certificate `serial_number` + `issuer`
-   - If an existing record is matched, its validity dates, subject alternative names, and operational status are updated in place with optimistic locking (`@Version`) without modifying its persistent UUID.
-   - If missing, a new `CertificateRecord` entity is generated with `source = SERVICENOW`.
-
-3. **Resilient Data Sanitization & Deterministic Fingerprints**:
-   - Parses diverse ServiceNow date patterns (`yyyy-MM-dd HH:mm:ss`, ISO-8601, `yyyy-MM-dd`).
-   - If a legacy ServiceNow certificate record lacks an explicit thumbprint, a cryptographic SHA-256 fingerprint is deterministically derived from `sys_id|serial_number|common_name` to prevent collisions.
-   - Cleans colons and whitespace from thumbprints (`AA:BB:CC...` -> `AABBCC...`).
-
-4. **Transient Zero-Credential & Private Key Security**:
-   - No private keys or server credentials are ever accepted, requested, or persisted during discovery.
-   - External ServiceNow credentials (username, password, client secret, bearer token) are injected via `@ConfigurationProperties(prefix = "cdm.servicenow")` and never logged.
-
-5. **Fault Tolerance & Resilience**:
-   - **Authentication Failure (401/403)**: Immediately caught and mapped to `ServiceNowAuthenticationException`.
-   - **Rate Limiting (429)**: Respects `Retry-After` header and retries with backoff up to `maxRetries`.
-   - **Service Unavailable (503/504)**: Retries with exponential backoff before throwing `ServiceNowServerException`.
-   - **Connection/Read Timeout**: Mapped to `ServiceNowTimeoutException`.
-   - **Malformed JSON**: Mapped to `ServiceNowParseException`.
-   - All failures emit structured audit logs with distributed `correlation_id`.
-
-6. **Local Development & Mock Mode**:
-   - Enabled out-of-the-box in `application-local.yml` (`cdm.servicenow.mock-enabled=true`).
-   - Provides an in-memory `MockServiceNowClient` allowing developers to run offline without live ServiceNow instances.
-   - Fully tested with real HTTP wire protocols via WireMock (`ServiceNowClientWireMockTest`).
 
 ---
 
@@ -688,10 +566,6 @@ Expected output:
 ```text
 [INFO] Running com.grassroots.cdm.ActuatorAndOpenApiIntegrationTest
 [INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
-[INFO] Running com.grassroots.cdm.integration.servicenow.ServiceNowClientWireMockTest
-[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0
-[INFO] Running com.grassroots.cdm.discovery.DiscoveryServiceIntegrationTest
-[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
@@ -704,7 +578,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 38, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 

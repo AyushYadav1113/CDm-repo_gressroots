@@ -5,7 +5,6 @@ package com.grassroots.cdm.entity.enums;
  */
 public enum CertificateStatus {
     ACTIVE,
-    EXPIRING,
     PENDING_INSTALLATION,
     REPLACED,
     REVOKED,
