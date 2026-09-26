@@ -19,6 +19,8 @@ cdm:
   security:
     admin-username: ${SECURITY_BASIC_USERNAME:cdm_admin}
     admin-password: ${SECURITY_BASIC_PASSWORD:admin_dev_password_change_me}
+  servicenow:
+    mock-enabled: ${SERVICENOW_MOCK_ENABLED:true}
 
 logging:
   level:
