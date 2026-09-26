@@ -1,4 +1,4 @@
-# Certificate Deployment Manager (CDM) - Core Service
+# Certificate Deployment Manager (CDM) — Core Service
 
 The **Certificate Deployment Manager (CDM)** is an enterprise orchestration platform designed to automate the discovery, renewal matching, credential retrieval, MID Server dispatch, live verification, and auditing of SSL/TLS certificates across heterogeneous infrastructure (Windows IIS, Linux Apache/Nginx, and Java Keystores).
 
@@ -95,58 +95,269 @@ com.grassroots.cdm
 
 ---
 
-## Getting Started
+## Running the Codebase Locally
 
-### Prerequisites
+### 1. Prerequisites
 
-- Java 21+
-- Maven 3.9+
-- Docker & Docker Compose (or local PostgreSQL 16)
+Ensure you have the following installed on your machine:
 
-### Environment Configuration
+- **Java (JDK) 21+**: Verify with `java -version`
+- **Maven 3.9+** (or use included `./mvnw`): Verify with `./mvnw -version`
+- **Docker & Docker Desktop**: Verify with `docker --version`
+- **PostgreSQL** *(only needed if running database natively without Docker)*
 
-Copy the template to your environment:
-```bash
-cp .env.example .env
-```
+---
 
-### Running with Docker Compose
+### 2. Setting Up the Database
 
-To start both PostgreSQL and the CDM application:
-```bash
-docker compose up -d
-```
+You can run PostgreSQL either through **Docker** or as a **local native service**.
 
-To run only the PostgreSQL container:
+#### Option A: Using Docker (Quickest & Recommended)
+
+Start the PostgreSQL 16 container:
+
 ```bash
 docker compose up -d postgres
 ```
 
-### Running Locally with Maven
+To stop PostgreSQL later:
+```bash
+docker compose stop postgres
+```
+
+#### Option B: Using Native Local PostgreSQL
+
+If you run PostgreSQL directly on macOS (e.g., Homebrew) or Linux:
+
+1. Connect to PostgreSQL:
+   ```bash
+   psql -U $(whoami) -d postgres
+   ```
+
+2. Execute SQL setup:
+   ```sql
+   -- Create CDM database
+   CREATE DATABASE cdm_db;
+
+   -- Create application user
+   CREATE ROLE cdm_user WITH LOGIN PASSWORD 'cdm_password_change_me';
+
+   -- Grant privileges
+   GRANT ALL PRIVILEGES ON DATABASE cdm_db TO cdm_user;
+   \c cdm_db
+   GRANT ALL ON SCHEMA public TO cdm_user;
+   GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO cdm_user;
+   ```
+
+3. Test connection:
+   ```bash
+   PGPASSWORD=cdm_password_change_me psql -h localhost -U cdm_user -d cdm_db -c "SELECT current_user, current_database();"
+   ```
+
+---
+
+### 3. Local Environment Configuration (`.env`)
+
+The project uses `.env` for local configuration overrides (ignored by Git to keep secrets safe):
+
+```bash
+cp .env.example .env
+```
+
+Default configuration for local development:
+```env
+SPRING_PROFILES_ACTIVE=local
+SERVER_PORT=8085
+LOG_LEVEL_CDM=DEBUG
+
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=cdm_db
+DB_USERNAME=cdm_user
+DB_PASSWORD=cdm_password_change_me
+
+SECURITY_BASIC_USERNAME=cdm_admin
+SECURITY_BASIC_PASSWORD=admin_dev_password_change_me
+```
+
+> [!NOTE]
+> The default local server port is configured to **`8085`** in `application-local.yml` to prevent port collisions with other local services or Docker containers bound to port `8080`.
+
+---
+
+### 4. Starting the Application
+
+#### Method 1: Using Maven Wrapper (Standard Development Mode)
 
 ```bash
 SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
 ```
 
----
+The application will start in ~3–4 seconds. You will see:
+- Flyway automatically applies migration `V1__initial_schema.sql`
+- JPA repositories initialized
+- Tomcat started on port **`8085`**
 
-## Endpoints
+#### Method 2: Running via Docker Compose (Full Stack)
 
-| Method | Path | Description | Access |
-|---|---|---|---|
-| `GET` | `/api/v1/system/status` | System diagnostic & DB connectivity status | Public |
-| `GET` | `/api/v1/system/ping` | Lightweight ping liveness check | Public |
-| `GET` | `/actuator/health` | Spring Boot Actuator liveness & readiness | Public |
-| `GET` | `/actuator/info` | Application build & runtime info | Public |
-| `GET` | `/v3/api-docs` | OpenAPI 3.0 JSON specification | Public |
-| `GET` | `/swagger-ui/index.html` | Interactive Swagger UI documentation | Public |
-| `ANY` | `/api/v1/*` | Business orchestration endpoints | Authenticated (`ROLE_ADMIN`, `ROLE_ORCHESTRATOR`) |
+To run both PostgreSQL and the containerized Spring Boot application:
 
----
-
-## Testing
-
-Run unit and integration tests (executes containerized PostgreSQL via Testcontainers):
 ```bash
-mvn clean test
+docker compose up --build -d
 ```
+
+Stream application logs:
+```bash
+docker compose logs -f cdm-app
+```
+
+To stop all services:
+```bash
+docker compose down
+```
+
+#### Method 3: Running Packaged JAR
+
+```bash
+./mvnw clean package -DskipTests
+java -jar target/cdm-core-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
+```
+
+---
+
+### 5. Verifying the Running Application
+
+With the server running on port `8085`, verify endpoints using `curl`:
+
+#### A. System Diagnostics & Database Connectivity
+```bash
+curl -s http://localhost:8085/api/v1/system/status | jq .
+```
+```json
+{
+  "success": true,
+  "message": "System status retrieved successfully",
+  "data": {
+    "applicationName": "cdm-core",
+    "version": "1.0.0",
+    "status": "HEALTHY",
+    "serverTime": "2026-09-26T15:47:17.811Z",
+    "javaVersion": "24.0.1",
+    "components": {
+      "database": "UP (PostgreSQL ...)",
+      "security": "ENFORCED (Stateless Basic / RBAC)",
+      "flyway": "MIGRATIONS_APPLIED",
+      "orchestration": "READY"
+    }
+  },
+  "timestamp": "2026-09-26T15:47:17.814647Z"
+}
+```
+
+#### B. Lightweight Ping Check
+```bash
+curl -s http://localhost:8085/api/v1/system/ping | jq .
+```
+```json
+{
+  "success": true,
+  "message": "Ping successful",
+  "data": "pong"
+}
+```
+
+#### C. Spring Boot Actuator Health Probe
+```bash
+curl -s http://localhost:8085/actuator/health | jq .
+```
+```json
+{
+  "status": "UP",
+  "components": {
+    "db": {
+      "status": "UP"
+    }
+  }
+}
+```
+
+#### D. Interactive Swagger UI & OpenAPI Specification
+- **Swagger UI Console**: [http://localhost:8085/swagger-ui/index.html](http://localhost:8085/swagger-ui/index.html)
+- **OpenAPI 3.0 JSON Spec**: [http://localhost:8085/v3/api-docs](http://localhost:8085/v3/api-docs)
+
+#### E. Spring Security Verification
+1. **Unauthenticated access to protected endpoint (Expect 401)**:
+   ```bash
+   curl -i http://localhost:8085/api/v1/jobs
+   ```
+   *Returns HTTP 401 Unauthorized in RFC 7807 error format.*
+
+2. **Authenticated access using Basic Auth credentials**:
+   ```bash
+   curl -i -u cdm_admin:admin_dev_password_change_me http://localhost:8085/api/v1/system/status
+   ```
+   *Returns HTTP 200 OK.*
+
+---
+
+## 6. Testing with Postman & Newman
+
+A complete Postman collection and environment are pre-configured in the [`postman/`](file:///Users/ayushyadav/CDm-repo_gressroots/postman) folder:
+
+- Collection: [`postman/CDM_API_Collection.postman_collection.json`](file:///Users/ayushyadav/CDm-repo_gressroots/postman/CDM_API_Collection.postman_collection.json)
+- Environment: [`postman/CDM_Local.postman_environment.json`](file:///Users/ayushyadav/CDm-repo_gressroots/postman/CDM_Local.postman_environment.json)
+- Raw OpenAPI Spec: [`postman/cdm-openapi.json`](file:///Users/ayushyadav/CDm-repo_gressroots/postman/cdm-openapi.json)
+
+### Importing into Postman:
+1. Open Postman and click **Import** (top left).
+2. Drag and drop both JSON files from `postman/`.
+3. Select **CDM Local Environment** in the top-right environment selector.
+4. Click **Run collection** to run all automated test assertions.
+
+### Running via CLI (Newman):
+```bash
+npx -y newman run postman/CDM_API_Collection.postman_collection.json \
+  -e postman/CDM_Local.postman_environment.json
+```
+
+---
+
+## 7. Running the Automated Test Suite
+
+CDM uses **Testcontainers** to launch an isolated PostgreSQL container automatically during integration test runs.
+
+Run all unit tests and integration tests:
+```bash
+./mvnw clean test
+```
+
+Expected output:
+```text
+[INFO] Running com.grassroots.cdm.ActuatorAndOpenApiIntegrationTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.controller.SystemControllerTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.service.SystemServiceImplTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.exception.GlobalExceptionHandlerTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.CdmApplicationTests
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] Results:
+[INFO] Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+---
+
+## 8. Common Troubleshooting
+
+| Issue | Cause | Resolution |
+|---|---|---|
+| `Port 8085 already in use` | Another process is using port 8085. | Update `SERVER_PORT=8090` in `.env` or run `SERVER_PORT=8090 ./mvnw spring-boot:run`. |
+| `FATAL: password authentication failed for user "cdm_user"` | Local PostgreSQL user password mismatch. | Verify credentials in `.env` match your PostgreSQL instance, or use `docker compose up -d postgres`. |
+| `Connection refused: localhost:5432` | PostgreSQL is not started. | Start PostgreSQL with `docker compose up -d postgres` or `brew services start postgresql@16`. |
+| `Docker daemon is not running` (during `./mvnw test`) | Docker Desktop is not started. | Open Docker Desktop (`open -a Docker` on macOS). |

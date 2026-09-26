@@ -37,6 +37,13 @@ class ActuatorAndOpenApiIntegrationTest extends AbstractIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("Certificate Deployment Manager (CDM) API");
         assertThat(response.getBody()).contains("openapi");
+
+        // Export generated OpenAPI 3.0 spec for Postman import
+        try {
+            java.nio.file.Files.createDirectories(java.nio.file.Path.of("postman"));
+            java.nio.file.Files.writeString(java.nio.file.Path.of("postman/cdm-openapi.json"), response.getBody());
+        } catch (Exception ignored) {
+        }
     }
 
     @Test

@@ -1,0 +1,539 @@
+{
+	"info": {
+		"_postman_id": "9b1a5124-b13c-4d55-8947-8cfb62e49c91",
+		"name": "Certificate Deployment Manager (CDM) API",
+		"description": "Enterprise orchestration collection for Certificate Deployment Manager (CDM). Includes system diagnostics, Spring Boot Actuator probes, OpenAPI specifications, and security verification tests.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "System Diagnostics",
+			"description": "Endpoints providing runtime diagnostics, component readiness, and PostgreSQL connectivity verification.",
+			"item": [
+				{
+					"name": "Get System & Database Status",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has success flag true\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.success).to.eql(true);",
+									"});",
+									"",
+									"pm.test(\"Database connectivity is UP\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.data.status).to.eql(\"HEALTHY\");",
+									"    pm.expect(jsonData.data.components.database).to.include(\"UP\");",
+									"});",
+									"",
+									"pm.test(\"Response time is under 1000ms\", function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(1000);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/system/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"system",
+								"status"
+							]
+						},
+						"description": "Retrieves real-time system diagnostic status, application version, and live PostgreSQL connection validation."
+					},
+					"response": []
+				},
+				{
+					"name": "Ping (Liveness Check)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Ping returns pong\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.success).to.eql(true);",
+									"    pm.expect(jsonData.data).to.eql(\"pong\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/system/ping",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"system",
+								"ping"
+							]
+						},
+						"description": "Lightweight ping endpoint for basic network and liveness availability checks."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Spring Boot Actuator",
+			"description": "Production observability endpoints for liveness, readiness, and subsystem metrics.",
+			"item": [
+				{
+					"name": "Actuator Health Check",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Overall Health Status is UP\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status).to.eql(\"UP\");",
+									"});",
+									"",
+									"pm.test(\"Database component is UP\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.components && jsonData.components.db) {",
+									"        pm.expect(jsonData.components.db.status).to.eql(\"UP\");",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/actuator/health",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"actuator",
+								"health"
+							]
+						},
+						"description": "Spring Boot Actuator composite health probe verifying database connectivity, disk space, and application readiness."
+					},
+					"response": []
+				},
+				{
+					"name": "Actuator Info",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/actuator/info",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"actuator",
+								"info"
+							]
+						},
+						"description": "Application metadata and build information."
+					},
+					"response": []
+				},
+				{
+					"name": "Actuator Metrics Overview",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Metrics names list is returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.names).to.be.an(\"array\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/actuator/metrics",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"actuator",
+								"metrics"
+							]
+						},
+						"description": "Returns list of all available Micrometer runtime metrics."
+					},
+					"response": []
+				},
+				{
+					"name": "Actuator Metric: JVM Memory Used",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Metric has measurements\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.name).to.eql(\"jvm.memory.used\");",
+									"    pm.expect(jsonData.measurements).to.be.an(\"array\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/actuator/metrics/jvm.memory.used",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"actuator",
+								"metrics",
+								"jvm.memory.used"
+							]
+						},
+						"description": "Inspects JVM memory usage metrics."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "OpenAPI & Swagger Documentation",
+			"description": "Interactive documentation and OpenAPI 3.0 schema resources.",
+			"item": [
+				{
+					"name": "Get OpenAPI 3.0 JSON Specification",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"OpenAPI spec is valid version 3\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.openapi).to.include(\"3.\");",
+									"    pm.expect(jsonData.info.title).to.include(\"Certificate Deployment Manager\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/v3/api-docs",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"v3",
+								"api-docs"
+							]
+						},
+						"description": "Retrieves raw OpenAPI 3.0 JSON specification describing all published CDM REST endpoints."
+					},
+					"response": []
+				},
+				{
+					"name": "Swagger UI Console HTML",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 OK\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response is HTML containing Swagger UI\", function () {",
+									"    pm.expect(pm.response.text()).to.include(\"swagger-ui\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/swagger-ui/index.html",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"swagger-ui",
+								"index.html"
+							]
+						},
+						"description": "Swagger UI interactive documentation console."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Security & Authorization Verification",
+			"description": "Validation requests to ensure Spring Security properly enforces role-based access control and RFC-7807 error formats.",
+			"item": [
+				{
+					"name": "Unauthenticated Access to Protected Endpoint (Expect 401)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401 Unauthorized\", function () {",
+									"    pm.response.to.have.status(401);",
+									"});",
+									"",
+									"pm.test(\"Response conforms to RFC-7807 error format\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status).to.eql(401);",
+									"    pm.expect(jsonData.error).to.eql(\"Unauthorized\");",
+									"    pm.expect(jsonData.path).to.eql(\"/api/v1/jobs\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/jobs",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"jobs"
+							]
+						},
+						"description": "Negative security test verifying that requests without Basic Auth credentials to /api/v1/* are blocked with HTTP 401."
+					},
+					"response": []
+				},
+				{
+					"name": "Authenticated Request with Basic Auth Credentials",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Request is authenticated and authorized\", function () {",
+									"    pm.expect(pm.response.code).to.not.equal(401);",
+									"    pm.expect(pm.response.code).to.not.equal(403);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUsername}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPassword}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/system/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"system",
+								"status"
+							]
+						},
+						"description": "Verifies authenticated access using {{adminUsername}} and {{adminPassword}}."
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"auth": {
+		"type": "basic",
+		"basic": [
+			{
+				"key": "username",
+				"value": "{{adminUsername}}",
+				"type": "string"
+			},
+			{
+				"key": "password",
+				"value": "{{adminPassword}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8085",
+			"type": "string"
+		},
+		{
+			"key": "adminUsername",
+			"value": "cdm_admin",
+			"type": "string"
+		},
+		{
+			"key": "adminPassword",
+			"value": "admin_dev_password_change_me",
+			"type": "string"
+		}
+	]
+}
