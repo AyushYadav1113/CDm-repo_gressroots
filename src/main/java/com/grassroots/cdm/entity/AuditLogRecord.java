@@ -6,7 +6,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -15,7 +14,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Immutable audit log record capturing all system mutations and security events.
+ * Immutable audit log record capturing all system state changes, deployment operations, and security events.
  */
 @Entity
 @Table(name = "audit_logs")
@@ -26,8 +25,20 @@ public class AuditLogRecord {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
+    @Column(name = "correlation_id", nullable = false, length = 64)
+    private String correlationId;
+
+    @Column(name = "reference_id", length = 100)
+    private String referenceId;
+
+    @Column(name = "event_type", nullable = false, length = 100)
+    private String eventType;
+
     @Column(name = "action", nullable = false, length = 100)
     private String action;
+
+    @Column(name = "message", nullable = false, columnDefinition = "TEXT")
+    private String message;
 
     @Column(name = "entity_name", nullable = false, length = 100)
     private String entityName;
@@ -54,8 +65,14 @@ public class AuditLogRecord {
     public AuditLogRecord() {
     }
 
-    public AuditLogRecord(String action, String entityName, String entityId, String actor, String outcome, String details, String clientIp) {
-        this.action = action;
+    public AuditLogRecord(String correlationId, String referenceId, String eventType, String message,
+                          String entityName, String entityId, String actor, String outcome,
+                          String details, String clientIp) {
+        this.correlationId = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        this.referenceId = referenceId;
+        this.eventType = eventType;
+        this.action = eventType;
+        this.message = message;
         this.entityName = entityName;
         this.entityId = entityId;
         this.actor = actor;
@@ -63,6 +80,12 @@ public class AuditLogRecord {
         this.details = details;
         this.clientIp = clientIp;
         this.timestamp = Instant.now();
+    }
+
+    public AuditLogRecord(String action, String entityName, String entityId, String actor,
+                          String outcome, String details, String clientIp) {
+        this(UUID.randomUUID().toString(), entityId, action, action + " on " + entityName,
+                entityName, entityId, actor, outcome, details, clientIp);
     }
 
     public UUID getId() {
@@ -73,12 +96,50 @@ public class AuditLogRecord {
         this.id = id;
     }
 
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
+    }
+
+    public String getReferenceId() {
+        return referenceId;
+    }
+
+    public void setReferenceId(String referenceId) {
+        this.referenceId = referenceId;
+    }
+
+    public String getEventType() {
+        return eventType;
+    }
+
+    public void setEventType(String eventType) {
+        this.eventType = eventType;
+        if (this.action == null) {
+            this.action = eventType;
+        }
+    }
+
     public String getAction() {
         return action;
     }
 
     public void setAction(String action) {
         this.action = action;
+        if (this.eventType == null) {
+            this.eventType = action;
+        }
+    }
+
+    public String getMessage() {
+        return message;
+    }
+
+    public void setMessage(String message) {
+        this.message = message;
     }
 
     public String getEntityName() {

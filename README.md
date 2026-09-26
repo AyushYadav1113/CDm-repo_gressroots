@@ -45,20 +45,41 @@ com.grassroots.cdm
 ├── deployment                           # Deployment orchestration domain
 │   ├── DeploymentDispatcher.java        # MID Server dispatch orchestrator contract
 │   ├── DeploymentInstruction.java       # Parameterized MID server payload specification
-│   ├── DeploymentJobStatus.java         # State machine statuses
+│   ├── DeploymentJobStatus.java         # State machine statuses (PENDING, DISPATCHED, etc.)
 │   └── TargetType.java                  # Supported targets (IIS, Apache, Nginx, JKS)
-├── dto                                  # Data Transfer Objects (Records)
+├── dto                                  # Data Transfer Objects (Records & DTOs)
 │   ├── ApiResponse.java                 # Standard response wrapper
+│   ├── AuditLogDto.java                 # Audit log view DTO
+│   ├── CertificateInstallationDto.java  # Certificate installation view DTO
+│   ├── CertificateReplacementDto.java   # Certificate replacement match view DTO
 │   ├── CertificateSummaryDto.java       # Certificate view representation
-│   ├── DeploymentJobDto.java            # Job view representation
+│   ├── DeploymentJobDto.java            # Deployment job view representation
 │   ├── ErrorResponse.java               # RFC-7807 error envelope
+│   ├── MidServerDto.java                # MID server status & health view DTO
 │   ├── SystemStatusDto.java             # Diagnostic status payload
+│   ├── TargetServerDto.java             # Managed server view DTO
 │   └── ValidationError.java             # Constraint violation item
-├── entity                               # JPA entities
+├── entity                               # JPA entities (Domain Model)
 │   ├── AuditLogRecord.java              # audit_logs table entity
 │   ├── BaseEntity.java                  # MappedSuperclass (UUID, version, audit timestamps)
+│   ├── CertificateInstallation.java     # certificate_installations table entity
 │   ├── CertificateRecord.java           # certificates table entity
-│   └── DeploymentJob.java               # deployment_jobs table entity
+│   ├── CertificateReplacement.java      # certificate_replacements table entity
+│   ├── DeploymentJob.java               # deployment_jobs table entity
+│   ├── MidServer.java                   # mid_servers table entity
+│   ├── TargetServer.java                # target_servers table entity
+│   └── enums                            # Domain Enums (String persisted)
+│       ├── AuditOutcome.java            # SUCCESS, FAILURE, REJECTED, etc.
+│       ├── CertificateSource.java       # SERVICENOW, SECTIGO, MANUAL, etc.
+│       ├── CertificateStatus.java       # ACTIVE, EXPIRING, EXPIRED, REVOKED, etc.
+│       ├── DeploymentType.java          # RENEWAL_REPLACEMENT, INITIAL_INSTALL, etc.
+│       ├── EnvironmentType.java         # PRODUCTION, STAGING, QA, DEVELOPMENT
+│       ├── InstallationStatus.java      # INSTALLED, PENDING_VERIFICATION, VERIFIED, etc.
+│       ├── MatchStatus.java             # AUTO_MATCHED, MANUALLY_CONFIRMED, etc.
+│       ├── MidServerStatus.java         # UP, DOWN, DEGRADED, PAUSED, MAINTENANCE
+│       ├── ServerOperatingSystem.java   # WINDOWS_SERVER, LINUX_RHEL, etc.
+│       ├── ServerStatus.java            # ACTIVE, MAINTENANCE, DECOMMISSIONED, etc.
+│       └── ServerTechnology.java        # IIS, APACHE, NGINX, TOMCAT, JAVA_KEYSTORE
 ├── exception                            # Exception handling and translations
 │   ├── CdmException.java                # Base application exception
 │   ├── GlobalExceptionHandler.java      # Centralized REST exception translator
@@ -76,8 +97,12 @@ com.grassroots.cdm
 │   └── MatchResult.java                 # Match evaluation outcome
 ├── repository                           # Spring Data JPA repositories
 │   ├── AuditLogRecordRepository.java
+│   ├── CertificateInstallationRepository.java
 │   ├── CertificateRecordRepository.java
-│   └── DeploymentJobRepository.java
+│   ├── CertificateReplacementRepository.java
+│   ├── DeploymentJobRepository.java
+│   ├── MidServerRepository.java
+│   └── TargetServerRepository.java
 ├── security                             # Authentication & authorization handlers
 │   ├── CustomAccessDeniedHandler.java   # 403 Forbidden JSON handler
 │   └── CustomAuthenticationEntryPoint.java # 401 Unauthorized JSON handler
@@ -92,6 +117,212 @@ com.grassroots.cdm
     ├── WorkflowContext.java             # Contextual workflow state
     └── WorkflowEngine.java              # Step execution engine contract
 ```
+
+
+---
+
+## Domain Model & Database Architecture
+
+The Certificate Deployment Manager (CDM) database schema is version-controlled via **Flyway** and backed by **PostgreSQL 15/16** with strong relational integrity, composite unique constraints, indexes for query performance, and JSONB columns for semi-structured metadata.
+
+### 1. Entity-Relationship Diagram (ERD)
+
+```mermaid
+erDiagram
+    MID_SERVERS ||--o{ TARGET_SERVERS : "executes jobs on"
+    TARGET_SERVERS ||--o{ CERTIFICATE_INSTALLATIONS : "hosts"
+    CERTIFICATES ||--o{ CERTIFICATE_INSTALLATIONS : "bound to"
+    CERTIFICATES ||--o{ CERTIFICATE_REPLACEMENTS : "old_certificate"
+    CERTIFICATES ||--o{ CERTIFICATE_REPLACEMENTS : "new_certificate"
+    CERTIFICATES ||--o{ DEPLOYMENT_JOBS : "old_cert"
+    CERTIFICATES ||--o{ DEPLOYMENT_JOBS : "new_cert"
+    TARGET_SERVERS ||--o{ DEPLOYMENT_JOBS : "target_server"
+    CERTIFICATE_INSTALLATIONS ||--o{ DEPLOYMENT_JOBS : "installation"
+
+    MID_SERVERS {
+        uuid id PK
+        varchar name UK
+        varchar endpoint
+        varchar status
+        jsonb network_metadata
+        jsonb health_info
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    TARGET_SERVERS {
+        uuid id PK
+        varchar hostname UK
+        varchar ip_address
+        varchar operating_system
+        varchar technology
+        varchar environment
+        uuid mid_server_id FK
+        varchar status
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    CERTIFICATES {
+        uuid id PK
+        varchar serial_number
+        varchar thumbprint UK
+        varchar common_name
+        text subject_alternative_names
+        varchar issuer
+        timestamptz valid_from
+        timestamptz valid_to
+        varchar source
+        varchar external_id
+        varchar status
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    CERTIFICATE_INSTALLATIONS {
+        uuid id PK
+        uuid certificate_id FK
+        uuid server_id FK
+        varchar technology
+        varchar binding_info
+        varchar installation_path
+        int port
+        varchar status
+        timestamptz last_verified_at
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    CERTIFICATE_REPLACEMENTS {
+        uuid id PK
+        uuid old_certificate_id FK
+        uuid new_certificate_id FK
+        float matching_score
+        jsonb matching_reasons
+        varchar match_status
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    DEPLOYMENT_JOBS {
+        uuid id PK
+        varchar job_reference UK
+        varchar idempotency_key UK
+        uuid old_certificate_id FK
+        uuid new_certificate_id FK
+        uuid target_server_id FK
+        uuid installation_id FK
+        varchar deployment_type
+        varchar status
+        int attempt_count
+        int retry_count
+        int max_retries
+        timestamptz scheduled_at
+        timestamptz started_at
+        timestamptz completed_at
+        text error_information
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    AUDIT_LOGS {
+        uuid id PK
+        varchar correlation_id
+        varchar reference_id
+        varchar event_type
+        text message
+        varchar actor
+        varchar outcome
+        jsonb details
+        varchar client_ip
+        timestamptz timestamp
+    }
+```
+
+### 2. Core Entities & Schema Specifications
+
+| Table | Description | Primary Key | Key Constraints & Indexes |
+|---|---|---|---|
+| [`certificates`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/CertificateRecord.java) | Master inventory of discovered (ServiceNow) and renewed (Sectigo) certificates. | `UUID` | Unique: `thumbprint`, `fingerprint_sha256`. Indexes: `common_name`, `valid_to`, `serial_number`, `status`, `source`. |
+| [`mid_servers`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/MidServer.java) | ServiceNow MID Server nodes responsible for dispatching commands to target machines. | `UUID` | Unique: `name`. Index: `status`. Includes `network_metadata` (JSONB) and `health_info` (JSONB). |
+| [`target_servers`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/TargetServer.java) | Managed endpoints (Windows IIS, Linux Apache/Nginx, Java containers). | `UUID` | Unique: `hostname`. Indexes: `mid_server_id`, `status`, `environment`, `technology`. Foreign Key: `mid_server_id` (`ON DELETE SET NULL`). |
+| [`certificate_installations`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/CertificateInstallation.java) | Active binding of a certificate to a server port, binding path, or virtual host. | `UUID` | Unique Compound: `(server_id, port, binding_info)`. Indexes: `certificate_id`, `server_id`, `status`. Foreign Keys: `certificate_id` (`ON DELETE CASCADE`), `server_id` (`ON DELETE CASCADE`). |
+| [`certificate_replacements`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/CertificateReplacement.java) | Correlated pairing of an expiring certificate with its renewed Sectigo candidate. | `UUID` | Unique Compound: `(old_certificate_id, new_certificate_id)`. Indexes: `old_certificate_id`, `new_certificate_id`, `match_status`. Includes `matching_reasons` (JSONB). |
+| [`deployment_jobs`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/DeploymentJob.java) | Orchestration state machine tracking deployment lifecycle, execution retries, and errors. | `UUID` | Unique: `job_reference`, `idempotency_key`. Indexes: `status`, `target_server_id`, `installation_id`, `deployment_type`, `scheduled_at`. Foreign Keys: `target_server_id` (`ON DELETE RESTRICT`), `old/new_certificate_id` (`ON DELETE SET NULL`), `installation_id` (`ON DELETE SET NULL`). |
+| [`audit_logs`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/AuditLogRecord.java) | Immutable, append-only security and orchestration audit trail. | `UUID` | Indexes: `correlation_id`, `event_type`, `reference_id`, `timestamp`, `action`. Semi-structured `details` (JSONB). |
+
+### 3. Flyway Migrations
+
+Database schema evolutions are managed strictly through Flyway scripts located in [`src/main/resources/db/migration/`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/resources/db/migration):
+
+- [`V1__initial_schema.sql`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/resources/db/migration/V1__initial_schema.sql): Baseline tables (`certificates`, `deployment_jobs`, `audit_logs`).
+- [`V2__comprehensive_domain_model.sql`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/resources/db/migration/V2__comprehensive_domain_model.sql): Adds `mid_servers`, `target_servers`, `certificate_installations`, `certificate_replacements`, enhances `deployment_jobs` with `idempotency_key` and FK relations, adds `correlation_id` and `event_type` to `audit_logs`, and applies unique composite constraints and performance indexes.
+
+To run migrations locally:
+```bash
+./mvnw org.flywaydb:flyway-maven-plugin:migrate \
+  -Dflyway.url=jdbc:postgresql://localhost:5432/cdm_db \
+  -Dflyway.user=cdm_user \
+  -Dflyway.password=cdm_password_change_me \
+  -Dflyway.locations=filesystem:src/main/resources/db/migration
+```
+
+### 4. Database Relationships & Entity Graph
+
+1. **MID Server to Target Server (1 : N)**:
+   - A `MidServer` manages multiple `TargetServer` endpoints based on network routing and VPC boundaries.
+   - Relationship is `FetchType.LAZY` with `ON DELETE SET NULL`. If a MID Server node is retired or relocated, target server records remain intact.
+
+2. **Certificate to Certificate Installation (1 : N)**:
+   - A single certificate (especially wildcard or multi-SAN certificates) can be installed across multiple target servers, ports, and sites.
+   - Deleting a certificate cascades deletion to its installation records (`ON DELETE CASCADE`).
+
+3. **Target Server to Certificate Installation (1 : N)**:
+   - A target server can host multiple certificates across different ports (e.g. 443, 8443) or different SNI virtual hosts.
+   - Deleting a target server cascades deletion to its installations (`ON DELETE CASCADE`).
+
+4. **Old Certificate to New Certificate Replacement (1 : N / Pairwise Unique)**:
+   - `CertificateReplacement` tracks renewal candidates matched by the matching engine.
+   - Enforced by unique constraint `uq_cert_replacement_pair (old_certificate_id, new_certificate_id)` to prevent redundant evaluation pairs.
+
+5. **Deployment Job Orchestration Graph**:
+   - `DeploymentJob` connects the `TargetServer`, `CertificateInstallation`, `oldCertificate`, and `newCertificate`.
+   - Protected by `ON DELETE RESTRICT` on `target_server_id` (active jobs cannot leave orphaned targets).
+   - Enforces uniqueness on `idempotency_key` to guarantee duplicate webhook or API requests do not trigger repeated dispatches.
+
+6. **Audit Trail Decoupling**:
+   - `AuditLogRecord` is deliberately not bound by relational foreign keys to business tables.
+   - Instead, it stores `correlation_id` (distributed trace ID) and `reference_id` (entity ID / job reference). This guarantees the audit log is strictly append-only and retains full forensic history even if underlying entities are pruned.
+
+### 5. Architectural Design Decisions & Assumptions
+
+1. **UUID Primary Keys Everywhere**:
+   - All entities inherit from [`BaseEntity`](file:///Users/ayushyadav/CDm-repo_gressroots/src/main/java/com/grassroots/cdm/entity/BaseEntity.java) using RFC 4122 UUID primary keys generated via `gen_random_uuid()`. This prevents enumeration attacks and supports seamless cross-datacenter replication without auto-increment collisions.
+
+2. **Optimistic Locking (`@Version BIGINT`)**:
+   - All stateful mutable entities include a `@Version` field (`BIGINT NOT NULL DEFAULT 0`).
+   - Ensures that concurrent background polling, MID Server status updates, and user approvals do not overwrite each other silently.
+
+3. **String Enum Persistence**:
+   - All domain enums (`CertificateStatus`, `DeploymentJobStatus`, `ServerTechnology`, `ServerOperatingSystem`, etc.) are mapped with `@Enumerated(EnumType.STRING)` as `VARCHAR(50)` columns.
+   - Avoids fragile ordinal mapping and native PostgreSQL ENUM types, enabling forward-compatible enum evolution without complex schema locks.
+
+4. **Strict Lazy Loading (`FetchType.LAZY`)**:
+   - All `@ManyToOne` and `@OneToMany` relationships use `FetchType.LAZY` to prevent N+1 queries and accidental Cartesian product loading across complex orchestration graphs.
+
+5. **Zero Credential Persistence**:
+   - In accordance with enterprise security standards, **no passwords, private keys, or credentials are stored in PostgreSQL**.
+   - Deployment credentials are fetched just-in-time from CyberArk CCP/AIM, kept in transient memory (`char[]`), and zeroed immediately after dispatch.
+
+6. **Dynamic JSONB Columns for Metadata**:
+   - `health_info` and `network_metadata` on `mid_servers`, `matching_reasons` on `certificate_replacements`, and `details` on `audit_logs` use PostgreSQL `JSONB` mapped via Hibernate `@JdbcTypeCode(SqlTypes.JSON)`.
+   - Provides schema flexibility for arbitrary diagnostic payloads without table alterations.
 
 ---
 
@@ -336,7 +567,7 @@ Expected output:
 [INFO] Running com.grassroots.cdm.ActuatorAndOpenApiIntegrationTest
 [INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
-[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
 [INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.service.SystemServiceImplTest
@@ -347,7 +578,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 

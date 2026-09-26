@@ -1,9 +1,12 @@
 package com.grassroots.cdm.repository;
 
+import com.grassroots.cdm.deployment.DeploymentJobStatus;
 import com.grassroots.cdm.entity.DeploymentJob;
+import com.grassroots.cdm.entity.enums.DeploymentType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -16,7 +19,19 @@ public interface DeploymentJobRepository extends JpaRepository<DeploymentJob, UU
 
     Optional<DeploymentJob> findByJobReference(String jobReference);
 
-    List<DeploymentJob> findByStatus(String status);
+    Optional<DeploymentJob> findByIdempotencyKey(String idempotencyKey);
+
+    List<DeploymentJob> findByStatus(DeploymentJobStatus status);
+
+    List<DeploymentJob> findByStatusIn(Collection<DeploymentJobStatus> statuses);
 
     List<DeploymentJob> findByTargetHost(String targetHost);
+
+    List<DeploymentJob> findByTargetServerId(UUID targetServerId);
+
+    List<DeploymentJob> findByNewCertificateId(UUID newCertificateId);
+
+    List<DeploymentJob> findByDeploymentType(DeploymentType deploymentType);
+
+    boolean existsByIdempotencyKey(String idempotencyKey);
 }

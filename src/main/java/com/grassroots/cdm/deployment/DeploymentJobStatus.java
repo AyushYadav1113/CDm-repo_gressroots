@@ -13,5 +13,6 @@ public enum DeploymentJobStatus {
     COMPLETED,
     FAILED,
     RETRY_PENDING,
+    CANCELLED,
     ROLLED_BACK
 }

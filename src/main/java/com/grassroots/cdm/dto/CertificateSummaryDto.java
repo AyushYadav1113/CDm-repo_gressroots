@@ -8,11 +8,12 @@ import java.util.UUID;
  */
 public record CertificateSummaryDto(
         UUID id,
+        String externalId,
         String serialNumber,
+        String thumbprint,
         String commonName,
         String subjectAlternativeNames,
         String issuer,
-        String fingerprintSha256,
         Instant validFrom,
         Instant validTo,
         String source,
