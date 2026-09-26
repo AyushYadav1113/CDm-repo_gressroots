@@ -1,0 +1,31 @@
+server:
+  port: ${SERVER_PORT:8085}
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:cdm_db}
+    username: ${DB_USERNAME:cdm_user}
+    password: ${DB_PASSWORD:cdm_password_change_me}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: CdmHikariPool-Local
+      maximum-pool-size: 10
+      minimum-idle: 2
+      idle-timeout: 300000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+
+cdm:
+  security:
+    admin-username: ${SECURITY_BASIC_USERNAME:cdm_admin}
+    admin-password: ${SECURITY_BASIC_PASSWORD:admin_dev_password_change_me}
+
+logging:
+  level:
+    root: INFO
+    com.grassroots.cdm: DEBUG
+    org.springframework.web: INFO
+    org.springframework.security: INFO
+    org.flywaydb: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql: TRACE

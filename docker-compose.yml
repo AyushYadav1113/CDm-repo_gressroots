@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cdm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-cdm_db}
+      POSTGRES_USER: ${DB_USERNAME:-cdm_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-cdm_password_change_me}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - cdm_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-cdm_user} -d ${DB_NAME:-cdm_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdm-network
+
+  cdm-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cdm-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-cdm_db}
+      DB_USERNAME: ${DB_USERNAME:-cdm_user}
+      DB_PASSWORD: ${DB_PASSWORD:-cdm_password_change_me}
+      SECURITY_BASIC_USERNAME: ${SECURITY_BASIC_USERNAME:-cdm_admin}
+      SECURITY_BASIC_PASSWORD: ${SECURITY_BASIC_PASSWORD:-admin_dev_password_change_me}
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    networks:
+      - cdm-network
+
+volumes:
+  cdm_postgres_data:
+    driver: local
+
+networks:
+  cdm-network:
+    driver: bridge

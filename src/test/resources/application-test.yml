@@ -1,0 +1,18 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+cdm:
+  security:
+    admin-username: test-admin
+    admin-password: test-password
+
+logging:
+  level:
+    root: INFO
+    com.grassroots.cdm: DEBUG
+    org.testcontainers: INFO
