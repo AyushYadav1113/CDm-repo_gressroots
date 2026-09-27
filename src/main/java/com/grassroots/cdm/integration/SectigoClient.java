@@ -3,24 +3,15 @@ package com.grassroots.cdm.integration;
 import java.util.List;
 
 /**
- * Interface contract for Sectigo Certificate Manager (SCM) REST API integration.
+ * Historical interface placeholder.
+ * Replaced by {@link com.grassroots.cdm.integration.sectigo.SectigoClient}.
  */
-public interface SectigoClient {
+@Deprecated
+public interface SectigoClient extends com.grassroots.cdm.integration.sectigo.SectigoClient {
 
-    /**
-     * Retrieves newly issued or renewed certificates ready for deployment.
-     *
-     * @return list of renewed certificate metadata
-     */
-    List<SectigoCertificateMetadata> fetchRenewedCertificates();
-
-    /**
-     * Downloads full certificate chain and PEM bundle from Sectigo.
-     *
-     * @param certificateId Sectigo certificate ID
-     * @return certificate chain bundle in PEM format
-     */
-    byte[] downloadCertificateChain(String certificateId);
+    default List<SectigoCertificateMetadata> fetchRenewedCertificates() {
+        return List.of();
+    }
 
     record SectigoCertificateMetadata(
             String certificateId,
