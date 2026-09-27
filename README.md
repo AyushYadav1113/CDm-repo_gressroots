@@ -1261,6 +1261,12 @@ Expected output:
 [INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.deployment.workflow.DeploymentWorkflowIntegrationTest
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.integration.midserver.MidServerClientWireMockTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.integration.midserver.MockMidServerClientTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.dispatcher.DeploymentDispatcherTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
@@ -1273,13 +1279,176 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 96, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 116, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
 ---
 
-## 8. Common Troubleshooting
+## 8. MID Server Integration & Execution Architecture
+
+The **MID Server Integration** connects the Certificate Deployment Manager (CDM) to internal enterprise networks where target servers reside. It enforces a strict separation of concerns between orchestration policy and remote execution.
+
+### Architectural Boundary
+
+> [!IMPORTANT]
+> **CDM is responsible for orchestration and decisions.**
+> CDM manages state machines, policy validation, threshold checks, audit trails, and idempotency guarantees. Target servers must never be directly contacted with remote execution commands from the CDM backend.
+>
+> **MID Server is responsible for execution inside the target network.**
+> The MID Server resides within the internal infrastructure network (DMZ or corporate intranet), interacts directly with target servers (via local WinRM, SSH, Keytool), and returns structured exit codes and execution telemetry back to CDM.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        CDM Core Platform                               │
+│  - Deployment Workflow & Job State Machine                             │
+│  - Idempotency & Concurrency Guards                                    │
+│  - CyberArk Vault Secret Orchestration                                 │
+│  - Immutable Audit Logging (AuditService)                              │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ HTTPS / TLS (Authenticated + X-Idempotency-Key)
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     ServiceNow MID Server Node                         │
+│  - Internal Network Proxy & Script Runner                              │
+│  - Queueing & Duplicate Request Detection                              │
+│  - Ephemeral Credential Resolution                                     │
+│  - Target Operating System / Technology Adapter                        │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ Local Management Protocols (WinRM, SSH, Keytool)
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Target Server                                   │
+│  - IIS / Windows Server                                                │
+│  - Nginx / Apache / Linux Server                                       │
+│  - Java Keystore / Application Server                                  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### End-to-End Bidirectional Flow
+
+#### 1. Forward Path: CDM → MID Server → Target Server (Dispatch & Execution)
+1. **Decision & Preparation (CDM)**:
+   - When a job transitions to `CREDENTIALS_ACQUIRED`, CDM's `DefaultDeploymentDispatcher` constructs the `MidServerJobRequestDto`.
+   - The payload includes the `jobId`, unique `idempotencyKey`, `targetServer` specification, `deploymentType`, `certificateReference` (vault locator reference, never plaintext private keys), and `executionParameters`.
+2. **Dispatch (MidServerClient)**:
+   - `MidServerClientImpl` issues an authenticated HTTP `POST /api/v1/mid/jobs` over TLS.
+   - Headers: `Authorization: Bearer <token>`, `X-Idempotency-Key: <key>`, `Idempotency-Key: <key>`, `Content-Type: application/json`.
+3. **Queueing & Duplicate Check (MID Server)**:
+   - MID Server inspects the idempotency key. If an execution task already exists for this key, it returns HTTP 409 Conflict with the existing `taskId` (or existing receipt).
+   - If new, MID Server enqueues the task, generates a unique task ID (e.g. `MID-TASK-998877`), and returns HTTP 201/202 with `MidServerJobResponseDto`.
+4. **Persistence & Audit (CDM)**:
+   - `DefaultMidServerExecutionService` persists a `MidServerExecution` record with status `QUEUED` into PostgreSQL (`mid_server_executions`).
+   - The job's `midServerTaskId` and `dispatchedAt` are updated, and the state machine transitions to `SENT_TO_MID`.
+5. **Execution (MID Server → Target Server)**:
+   - MID Server retrieves credentials securely, establishes a connection to the target server inside the network, installs the certificate, updates the application binding, and restarts/reloads the service.
+
+#### 2. Reverse Path: Target Server → MID Server → CDM (Status & Reconciliation)
+1. **Outcome Reporting (Target Server → MID Server)**:
+   - Target server completes script execution and returns exit code (0 for success, non-zero for failure) and stdout/stderr logs to MID Server.
+2. **Telemetry Aggregation (MID Server)**:
+   - MID Server aggregates the exit code, duration, logs, and updates the task state (`SUCCESS`, `FAILED`, `TIMED_OUT`, `CANCELLED`).
+3. **Status Polling & Synchronization (CDM ← MID Server)**:
+   - CDM queries `GET /api/v1/mid/jobs/{taskId}` via `MidServerExecutionService.pollAndSyncTaskStatus(taskId)`.
+   - Updates `MidServerExecution` entity with `exitCode`, `stdoutSummary`, `stderrSummary`, `startedAt`, `completedAt`, and `status`.
+4. **State Machine Progression (CDM)**:
+   - If `state == SUCCESS` and `exitCode == 0`: CDM marks the job as `DEPLOYED` and immediately triggers `EndpointVerifier` (`VERIFICATION_PENDING`).
+   - If `state == FAILED` or `exitCode != 0`: CDM marks the job as `FAILED`, increments retry count, and executes retry / manual review escalation policies.
+
+---
+
+### MID Server Job API Contract
+
+#### Request Payload (`MidServerJobRequestDto`)
+```json
+{
+  "jobId": "e868b1c5-27ef-4ee5-94cf-e7e941f6bc04",
+  "idempotencyKey": "IDEMP-DEPLOY-2026-WEB01-001",
+  "targetServer": {
+    "hostname": "web-prod-01.grassroots.internal",
+    "ipAddress": "10.0.1.25",
+    "operatingSystem": "LINUX_RHEL",
+    "technology": "NGINX",
+    "targetPort": 443,
+    "environment": "PRODUCTION"
+  },
+  "deploymentType": "RENEWAL_REPLACEMENT",
+  "certificateReference": {
+    "certificateId": "76178824-9dd3-4719-ac4d-5448e1c9f4df",
+    "serialNumber": "1234567890ABCDEF",
+    "thumbprint": "8F3A2B1C4D5E6F701234567890ABCDEF12345670",
+    "commonName": "api.grassroots.internal",
+    "subjectAlternativeNames": ["api.grassroots.internal", "secure.grassroots.internal"],
+    "vaultSecretReference": "cyberark://GrassrootsSafe/Account/Cert-001",
+    "validityNotAfter": "2027-09-27T12:00:00Z"
+  },
+  "executionParameters": {
+    "installationPath": "/etc/nginx/ssl",
+    "bindingAlias": "default-ssl",
+    "restartService": true,
+    "reloadConfig": true,
+    "backupExisting": true,
+    "timeoutSeconds": 180,
+    "customSettings": {
+      "nginxReloadCmd": "systemctl reload nginx"
+    }
+  }
+}
+```
+
+#### Response Payload (`MidServerJobResponseDto`)
+```json
+{
+  "taskId": "MID-TASK-998877",
+  "jobId": "e868b1c5-27ef-4ee5-94cf-e7e941f6bc04",
+  "idempotencyKey": "IDEMP-DEPLOY-2026-WEB01-001",
+  "status": "QUEUED",
+  "acceptedAt": "2026-09-27T12:00:00Z",
+  "message": "Task queued for execution on target node"
+}
+```
+
+#### Status Query Payload (`MidServerStatusQueryResponseDto`)
+```json
+{
+  "taskId": "MID-TASK-998877",
+  "jobId": "e868b1c5-27ef-4ee5-94cf-e7e941f6bc04",
+  "idempotencyKey": "IDEMP-DEPLOY-2026-WEB01-001",
+  "state": "SUCCESS",
+  "exitCode": 0,
+  "stdoutSummary": "Certificate installed and bound to Nginx configuration successfully.",
+  "stderrSummary": null,
+  "errorMessage": null,
+  "dispatchedAt": "2026-09-27T12:00:00Z",
+  "startedAt": "2026-09-27T12:00:05Z",
+  "completedAt": "2026-09-27T12:00:28Z"
+}
+```
+
+---
+
+### Security, Redaction & Resilience
+
+1. **Zero Secret Leakage in Logs**:
+   - `CertificateReferenceDto.toString()` and `ExecutionParametersDto.toString()` redact all vault references (`[REDACTED]`).
+   - Private keys are **never** held in plaintext and **never** transmitted over the wire or logged.
+2. **TLS / HTTPS Transport & Authentication**:
+   - Production client communicates strictly over HTTPS.
+   - Supports Bearer Token, Basic Auth, and Custom API Key headers.
+3. **Transient Retry & Resilience**:
+   - Safe exponential backoff retries for transient gateway failures (502, 503, 504), connection refused, and read timeouts.
+   - Non-retryable client errors (400, 401, 403, 404, 409) fail immediately without retrying.
+4. **Execution Status Persistence (Flyway V4)**:
+   - Migration `V4__mid_server_execution_tracking.sql` creates `mid_server_executions` table.
+   - Stores every dispatch attempt, exit codes, output summaries, and audit correlation IDs.
+5. **Local Development Simulation**:
+   - `MockMidServerClient` (`cdm.midserver.mock-enabled=true`) allows complete offline testing without physical MID servers.
+
+---
+
+## 9. Common Troubleshooting
 
 | Issue | Cause | Resolution |
 |---|---|---|
@@ -1287,3 +1456,5 @@ Expected output:
 | `FATAL: password authentication failed for user "cdm_user"` | Local PostgreSQL user password mismatch. | Verify credentials in `.env` match your PostgreSQL instance, or use `docker compose up -d postgres`. |
 | `Connection refused: localhost:5432` | PostgreSQL is not started. | Start PostgreSQL with `docker compose up -d postgres` or `brew services start postgresql@16`. |
 | `Docker daemon is not running` (during `./mvnw test`) | Docker Desktop is not started. | Open Docker Desktop (`open -a Docker` on macOS). |
+| `MID Server returns HTTP 409 Conflict` | Duplicate task submission with same idempotency key. | Verify idempotency key generation or retrieve existing task status using `midServerClient.getJobStatus(taskId)`. |
+

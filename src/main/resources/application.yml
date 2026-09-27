@@ -109,6 +109,21 @@ cdm:
       allow-manual-review-override: ${DEPLOYMENT_ALLOW_REVIEW_OVERRIDE:false}
       require-active-mid-server: ${DEPLOYMENT_REQUIRE_ACTIVE_MID:true}
       default-port: ${DEPLOYMENT_DEFAULT_PORT:443}
+  midserver:
+    base-url: ${MID_SERVER_BASE_URL:https://mid-server.grassroots.internal:8443}
+    auth-type: ${MID_SERVER_AUTH_TYPE:BEARER}
+    bearer-token: ${MID_SERVER_BEARER_TOKEN:}
+    username: ${MID_SERVER_USERNAME:}
+    password: ${MID_SERVER_PASSWORD:}
+    api-key: ${MID_SERVER_API_KEY:}
+    api-key-header: ${MID_SERVER_API_KEY_HEADER:X-MID-API-KEY}
+    connect-timeout-ms: ${MID_SERVER_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${MID_SERVER_READ_TIMEOUT_MS:10000}
+    max-retries: ${MID_SERVER_MAX_RETRIES:3}
+    backoff-ms: ${MID_SERVER_BACKOFF_MS:1000}
+    mock-enabled: ${MID_SERVER_MOCK_ENABLED:false}
+    jobs-path: ${MID_SERVER_JOBS_PATH:/api/v1/mid/jobs}
+    execution-timeout-seconds: ${MID_SERVER_EXECUTION_TIMEOUT_SECONDS:300}
 
 logging:
   pattern:

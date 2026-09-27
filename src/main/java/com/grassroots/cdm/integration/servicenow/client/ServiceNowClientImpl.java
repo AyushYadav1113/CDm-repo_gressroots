@@ -69,7 +69,11 @@ public class ServiceNowClientImpl implements ServiceNowClient {
     }
 
     private static RestClient buildDefaultRestClient(ServiceNowProperties props) {
-        org.springframework.http.client.JdkClientHttpRequestFactory factory = new org.springframework.http.client.JdkClientHttpRequestFactory();
+        java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+                .version(java.net.http.HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofMillis(props.getConnectTimeoutMs()))
+                .build();
+        org.springframework.http.client.JdkClientHttpRequestFactory factory = new org.springframework.http.client.JdkClientHttpRequestFactory(httpClient);
         factory.setReadTimeout(Duration.ofMillis(props.getReadTimeoutMs()));
 
         RestClient.Builder builder = RestClient.builder()

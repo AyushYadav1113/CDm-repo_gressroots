@@ -64,7 +64,11 @@ public class SectigoClientImpl implements SectigoClient {
     }
 
     private static RestClient buildDefaultRestClient(SectigoProperties props) {
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory();
+        java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+                .version(java.net.http.HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofMillis(props.getConnectTimeoutMs()))
+                .build();
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
         factory.setReadTimeout(Duration.ofMillis(props.getReadTimeoutMs()));
 
         RestClient.Builder builder = RestClient.builder()

@@ -23,6 +23,8 @@ cdm:
     mock-enabled: ${SERVICENOW_MOCK_ENABLED:true}
   sectigo:
     mock-enabled: ${SECTIGO_MOCK_ENABLED:true}
+  midserver:
+    mock-enabled: ${MID_SERVER_MOCK_ENABLED:true}
 
 logging:
   level:
