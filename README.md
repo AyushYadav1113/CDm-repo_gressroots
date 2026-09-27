@@ -1273,8 +1273,12 @@ Expected output:
 [INFO] Tests run: 17, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.deployment.adapter.linux.NginxDeploymentAdapterTest
 [INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.adapter.java.JavaDeploymentAdapterTest
+[INFO] Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.adapter.java.JavaKeystoreIntegrationTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.deployment.adapter.DeploymentAdapterRegistryTest
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
@@ -1287,7 +1291,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 163, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 184, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
@@ -1686,7 +1690,155 @@ If the target server already has the new certificate active (verified by `Certif
 
 ---
 
-## 11. Common Troubleshooting
+---
+
+## 11. Java Certificate Deployment Adapter (JKS & PKCS12)
+
+The **Java Deployment Adapter** ([`JavaDeploymentAdapter`](src/main/java/com/grassroots/cdm/deployment/adapter/java/JavaDeploymentAdapter.java)) provides certified orchestration for enterprise Java applications utilizing either standard **PKCS12** (`.p12`) or legacy **JKS** (`.jks`) keystores across diverse application servers (Spring Boot, Apache Tomcat, Oracle WebLogic, IBM WebSphere).
+
+### Architectural Overview
+
+```
+DeploymentAdapter
+      ├── IisDeploymentAdapter
+      ├── ApacheDeploymentAdapter
+      ├── NginxDeploymentAdapter
+      └── JavaDeploymentAdapter (JKS & PKCS12 Keystores)
+```
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        CDM Core Platform                               │
+│  - JavaDeploymentAdapter & JavaDeploymentProfileResolver               │
+│  - Profile Abstraction: Keystore Type, Location, Alias, Restart Policy │
+│  - JavaKeystoreManager: Cryptographic Verification & Local Tests       │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ Structured JavaDeploymentCommand via MidServerClient
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     ServiceNow MID Server Node                         │
+│  - Safe Execution Boundary (Zero ad-hoc shell scripts from CDM)        │
+│  - Executes 7 Certified Steps via Java Security Tools & System Hooks   │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ Keystore & Application Process Management
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│               Java Application Target (Spring Boot / Tomcat)           │
+│  1. Receive Certificate & Key Locator Securely from Vault             │
+│  2. Update JKS / PKCS12 Keystore (.cdm-bak backup created)             │
+│  3. Apply Restrictive POSIX Permissions (mode 0600 or 0640)            │
+│  4. Update Application Configuration Reference (server.xml / yml)      │
+│  5. Execute Restart/Reload Strategy (systemd, graceful, hot-reload)    │
+│  6. Verify Live TLS Endpoint (probe on port 8443 matches thumbprint)   │
+│  7. Return Structured Result & Record Audit Trail                     │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### The `JavaDeploymentProfile` Abstraction
+
+Java deployments vary widely between organizations and application frameworks. The system avoids assuming uniform paths or restart procedures by using [`JavaDeploymentProfile`](src/main/java/com/grassroots/cdm/deployment/adapter/java/profile/JavaDeploymentProfile.java):
+
+```java
+public class JavaDeploymentProfile {
+    private final String profileName;
+    private final KeystoreType keystoreType;         // PKCS12 or JKS
+    private final String keystoreLocation;          // e.g. /opt/app/security/keystore.p12
+    private final String keyAlias;                   // e.g. tomcat, server, springboot
+    private final String keystorePasswordVaultRef;   // cyberark://GrassrootsSafe/Account/...
+    private final String keyPasswordVaultRef;        // Optional separate key password
+    private final String appConfigLocation;          // e.g. server.xml or application.yml
+    private final RestartStrategy restartStrategy;   // SYSTEMD_SERVICE, GRACEFUL_RELOAD, HOT_RELOAD, etc.
+    private final String serviceName;                // e.g. myapp or tomcat9
+    private final int targetPort;                    // e.g. 8443
+    private final String fileMode;                   // 0600 or 0640
+    private final String owner;                      // e.g. tomcat or appuser
+    private final String group;                      // e.g. tomcat or appgroup
+}
+```
+
+Profiles are dynamically resolved by [`JavaDeploymentProfileResolver`](src/main/java/com/grassroots/cdm/deployment/adapter/java/profile/JavaDeploymentProfileResolver.java) from installation binding metadata, server technology, and target operating system.
+
+---
+
+### The 7 Conceptual Deployment Steps
+
+```
+[1. RECEIVE MATERIAL] ──► [2. UPDATE KEYSTORE] ──► [3. SET PERMISSIONS] ──► [4. UPDATE CONFIG] ──► [5. RESTART APP] ──► [6. VERIFY TLS PROBE]
+         │                        │                        │                       │                     │                      │
+     (Failure)                (Failure)                (Failure)               (Failure)             (Failure)              (Failure)
+         │                        │                        │                       │                     │                      │
+         ▼                        ▼                        ▼                       ▼                     ▼                      ▼
+  Fail immediately         Fail immediately         Fail immediately        Trigger Rollback      Trigger Rollback       Trigger Rollback
+  (Keystore untouched)     (Keystore untouched)     (Keystore untouched)    to Backup Keystore    to Backup Keystore     to Backup Keystore
+```
+
+1. **Step 1: Receive Certificate Material Securely**:
+   - Certificate chain and private key locators are acquired securely via vault references (`cyberark://...`).
+   - **Zero Password & Key Exposure**: Plaintext passwords and private key bytes are never stored in source code, serialized in request parameters, or printed to logs.
+2. **Step 2: Create / Update Keystore**:
+   - Updates the target alias in JKS or PKCS12 format.
+   - An atomic backup (`{keystoreLocation}.cdm-bak`) is preserved before writing new entries.
+   - Failure: Throws `KeystoreOperationException` (Exit Code 301). Keystore file remains intact.
+3. **Step 3: Set Appropriate File Permissions**:
+   - Applies restrictive POSIX permissions (`0600` or `0640` with application service user/group).
+   - Insecure permissions (e.g. `0666`, `0777`) are rejected during pre-flight validation.
+   - Failure: Throws `JavaPermissionException` (Exit Code 302).
+4. **Step 4: Update Application Configuration**:
+   - If configured, updates external configuration references (e.g. `server.xml` `<Certificate>` or Spring Boot `server.ssl.*`).
+   - Failure: Throws `ApplicationConfigurationException` (Exit Code 303). Triggers automated rollback.
+5. **Step 5: Restart / Reload Application**:
+   - Executes the application restart strategy:
+     - `SYSTEMD_SERVICE`: `systemctl restart {serviceName}`
+     - `GRACEFUL_RELOAD`: `systemctl reload {serviceName}` or actuator reload
+     - `SCRIPT_RESTART`: invokes application stop/start script
+     - `HOT_RELOAD`: keystore changes dynamically recognized by SSLContext watcher
+     - `NO_RESTART`: manual/external orchestration
+   - Failure: Throws `ApplicationRestartException` (Exit Code 304). Triggers automated rollback.
+6. **Step 6: Verify Live Endpoint (TLS Probe)**:
+   - Performs a live TLS handshake probe against the target host and port (default 8443).
+   - Confirms that the negotiated leaf certificate thumbprint matches the target certificate thumbprint.
+   - Failure: Throws `JavaEndpointVerificationException` (Exit Code 305). Triggers automated rollback.
+7. **Step 7: Structured Result & Audit Reporting**:
+   - Returns full [`DeploymentAdapterResult`](src/main/java/com/grassroots/cdm/deployment/adapter/DeploymentAdapterResult.java) with step-by-step telemetry.
+   - Updates `CertificateInstallation` status to `INSTALLED`, sets `lastVerifiedAt = Instant.now()`, and records `AuditEvent` `LIVE_ENDPOINT_VERIFIED`.
+
+---
+
+### Security Boundaries & Password Protection
+
+| Security Invariant | Implementation Mechanism |
+|---|---|
+| **No Passwords in Source Code** | Passwords are never hardcoded; they are referenced via enterprise vault locators (`cyberark://...`). |
+| **Zero Logging of Keys/Passwords** | `JavaDeploymentProfile.toString()` and `JavaDeploymentCommand.toString()` explicitly mask secrets with `[REDACTED]`. |
+| **In-Memory Password Wiping** | `JavaKeystoreManager.wipePassword()` zeroes `char[]` password arrays with `Arrays.fill(..., '\0')` immediately after use. |
+| **Path Traversal Defense** | Keystore and configuration locations are checked against directory traversal (`..`) and non-whitelisted characters. |
+| **Enforced Restrictive Modes** | Only POSIX modes `0600` or `0640` are accepted; world-readable modes (`0644`, `0666`, `0777`) are rejected with `JavaPermissionException`. |
+
+---
+
+### Automated Rollback Capability
+
+If a failure occurs during **Step 4 (Config Update)**, **Step 5 (Application Restart)**, or **Step 6 (Live Verification)**:
+1. The adapter verifies that `{keystoreLocation}.cdm-bak` exists.
+2. Dispatches a rollback command to the MID Server (`operation = Operation.ROLLBACK`).
+3. The MID Server restores the backup keystore, reverts application configuration if modified, and re-executes the restart strategy.
+4. An audit event is logged (`AuditAction.JOB_FAILED` with outcome `ROLLED_BACK`).
+5. A `DeploymentAdapterResult` is returned with `status = ROLLED_BACK` and `rollbackExecuted = true`.
+
+---
+
+### Repeated / Idempotent Deployment
+
+If the target keystore installation already holds the target certificate thumbprint:
+- The adapter skips remote execution completely.
+- Avoids unnecessary keystore rewrites, restarts, or TLS interruption.
+- Returns `DeploymentAdapterResult` with status `SKIPPED_IDEMPOTENT` and `idempotent = true`.
+
+---
+
+## 12. Common Troubleshooting
 
 | Issue | Cause | Resolution |
 |---|---|---|
@@ -1705,5 +1857,12 @@ If the target server already has the new certificate active (verified by `Certif
 | `LinuxServiceReloadException (Exit Code 206)` | `systemctl reload` exited non-zero. | Check `journalctl -u apache2` or `journalctl -u nginx` on the target host. Rollback automatically restores backup config. |
 | `LinuxVerificationException (Exit Code 207)` | Handshake returned old certificate thumbprint or connection was refused on port 443. | Verify virtual host SNI configuration and firewall rules on port 443. Rollback automatically restores backup config. |
 | `LinuxRollbackException` | Failed to restore configuration backup or syntax test failed on backup config. | Manual intervention required: inspect `{configPath}.cdm-bak` and reload service manually. |
+| `KeystoreOperationException (Exit Code 301)` | Corrupted keystore file, unsupported keystore format, or vault password mismatch. | Verify keystore type (JKS vs PKCS12) and check vault password reference in CyberArk safe. |
+| `JavaPermissionException (Exit Code 302)` | Target application user has no write access to keystore directory or insecure permissions requested. | Verify target directory ownership and ensure mode `0600` or `0640` is specified. |
+| `ApplicationConfigurationException (Exit Code 303)` | Failed updating `server.xml` or `application.yml` syntax. | Verify XML/YAML syntax; rollback automatically restores `{appConfigLocation}.cdm-bak`. |
+| `ApplicationRestartException (Exit Code 304)` | Java application failed to restart under specified `RestartStrategy`. | Inspect `journalctl -u {serviceName}` or application log file; rollback automatically restores backup keystore. |
+| `JavaEndpointVerificationException (Exit Code 305)` | TLS handshake probe on port 8443 returned previous certificate thumbprint or connection was refused. | Verify port binding, firewall rules, and virtual host configuration. Rollback automatically restores backup keystore. |
+| `JavaRollbackException` | Failed to restore `{keystoreLocation}.cdm-bak` or restart previous configuration. | Manual intervention required: inspect backup keystore file and restart application service manually. |
+
 
 

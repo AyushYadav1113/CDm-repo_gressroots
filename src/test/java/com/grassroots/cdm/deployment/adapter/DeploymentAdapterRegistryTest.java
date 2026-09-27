@@ -81,4 +81,17 @@ class DeploymentAdapterRegistryTest {
         assertThat(registry.getAdapter(ServerTechnology.NGINX)).contains(nginxAdapter);
         assertThat(registry.getAdapter(ServerTechnology.IIS)).isEmpty();
     }
+
+    @Test
+    @DisplayName("Registry resolves Java Keystore adapter")
+    void testRegistryResolvesJavaAdapter() {
+        DeploymentAdapter javaAdapter = mock(DeploymentAdapter.class);
+        when(javaAdapter.getSupportedTechnology()).thenReturn(ServerTechnology.JAVA_KEYSTORE);
+        when(javaAdapter.getSupportedTargetType()).thenReturn(TargetType.JAVA_KEYSTORE);
+
+        DeploymentAdapterRegistry registry = new DeploymentAdapterRegistry(List.of(javaAdapter));
+
+        assertThat(registry.getAdapter(ServerTechnology.JAVA_KEYSTORE)).contains(javaAdapter);
+        assertThat(registry.getAdapter(ServerTechnology.IIS)).isEmpty();
+    }
 }
