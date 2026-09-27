@@ -872,6 +872,133 @@ The Deployment Planner is validated across **15 unit and integration tests** (10
 
 ---
 
+## Deployment Workflow & Job State Machine
+
+The **Deployment Workflow and State Machine** orchestrates the end-to-end lifecycle of certificate deployments. It coordinates credential acquisition via CyberArk, dispatch to ServiceNow MID Servers, execution monitoring on target hosts, and live TLS verification while preventing arbitrary transitions, race conditions, and duplicate processing.
+
+### 1. State Machine Lifecycle & Transitions
+
+```text
+                  ┌──────────────┐
+                  │   CREATED    │
+                  └──────┬───────┘
+                         │
+                         ▼
+                  ┌──────────────┐
+                  │   PLANNED    │
+                  └──────┬───────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │  CREDENTIALS_PENDING   │
+                  └──────┬─────────────────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │  CREDENTIALS_ACQUIRED  │
+                  └──────┬─────────────────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │      SENT_TO_MID       │
+                  └──────┬─────────────────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │        RUNNING         │
+                  └──────┬─────────────────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │        DEPLOYED        │
+                  └──────┬─────────────────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │  VERIFICATION_PENDING  │
+                  └──────┬─────────────────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │        VERIFIED        │
+                  └──────┬─────────────────┘
+                         │
+                         ▼
+                  ┌────────────────────────┐
+                  │       COMPLETED        │ (Terminal State)
+                  └────────────────────────┘
+```
+
+#### Failure & Recovery Escalation Paths:
+
+```text
+Active States ──[On Error]──► FAILED
+                                │
+          ┌─────────────────────┴─────────────────────┐
+          ▼                                           ▼
+(Attempts < MaxRetries)                    (Attempts >= MaxRetries / Fatal)
+    RETRY_PENDING                               MANUAL_REVIEW
+          │                                           │
+          ▼                                           ▼
+[Re-executes Workflow]                    [Admin Action: Approved / Rejected]
+```
+
+### 2. Transition Rules Matrix
+
+Arbitrary state jumps are strictly disallowed. Every transition is validated by `DeploymentStateMachine`:
+
+| Source State | Permitted Next States | Trigger / Condition |
+|---|---|---|
+| `CREATED` | `PLANNED`, `FAILED`, `CANCELLED` | Deployment planning completes |
+| `PLANNED` | `CREDENTIALS_PENDING`, `FAILED`, `MANUAL_REVIEW`, `CANCELLED` | Workflow picks up job |
+| `CREDENTIALS_PENDING` | `CREDENTIALS_ACQUIRED`, `FAILED`, `RETRY_PENDING`, `MANUAL_REVIEW` | CyberArk retrieves credentials |
+| `CREDENTIALS_ACQUIRED` | `SENT_TO_MID`, `FAILED`, `RETRY_PENDING`, `MANUAL_REVIEW` | Dispatched to MID Server queue |
+| `SENT_TO_MID` | `RUNNING`, `FAILED`, `RETRY_PENDING`, `MANUAL_REVIEW` | MID Server begins execution |
+| `RUNNING` | `DEPLOYED`, `FAILED`, `RETRY_PENDING`, `MANUAL_REVIEW` | Target script succeeds |
+| `DEPLOYED` | `VERIFICATION_PENDING`, `VERIFIED`, `FAILED`, `RETRY_PENDING`, `MANUAL_REVIEW` | Live TLS check initiated |
+| `VERIFICATION_PENDING` | `VERIFIED`, `FAILED`, `RETRY_PENDING`, `MANUAL_REVIEW` | Endpoint matches cert thumbprint |
+| `VERIFIED` | `COMPLETED`, `FAILED`, `MANUAL_REVIEW` | Final reconciliation |
+| `COMPLETED` | *(None - Terminal)* | Immutability preserved |
+| `FAILED` | `RETRY_PENDING`, `MANUAL_REVIEW`, `CANCELLED` | Retry backoff or escalation |
+| `RETRY_PENDING` | `CREDENTIALS_PENDING`, `SENT_TO_MID`, `MANUAL_REVIEW`, `FAILED`, `CANCELLED` | Retry attempt initiates |
+| `MANUAL_REVIEW` | `RETRY_PENDING`, `CREDENTIALS_PENDING`, `COMPLETED`, `FAILED`, `CANCELLED` | Administrator decision |
+
+### 3. Reliability & Security Guardrails
+
+1. **Explicit Transition Validation**:
+   - Calling `transition()` with an unapproved state pairing throws `InvalidStateTransitionException`.
+2. **Duplicate & Concurrent Processing Prevention**:
+   - In-flight execution lock (`ConcurrentHashMap` guard) ensures the same job cannot be advanced simultaneously by two threads (throws `DuplicateProcessingException`).
+   - JPA Optimistic Locking (`@Version` on `BaseEntity`) catches database race conditions and throws `JobConcurrencyException`.
+3. **Completed Job Protection**:
+   - Once a job reaches `COMPLETED`, further execution attempts are rejected immediately.
+4. **Credential Security**:
+   - CyberArk credentials are held in transient memory buffers via `CredentialSecret` and wiped immediately (`secret.wipe()`). Credentials are never written to disk, database, or logs.
+5. **Tamper-Evident Audit Logging & Correlation**:
+   - Every state transition records an `AuditEvent` with correlation ID, actor, source state, target state, and execution timestamps (`dispatchedAt`, `startedAt`, `completedAt`).
+
+### 4. Test Suite Coverage
+
+The Deployment Workflow & State Machine is verified by **13 dedicated unit and integration tests** (100% pass rate):
+
+| # | Test Scenario | Test Class | Validated Behavior |
+|---|---|---|---|
+| 1 | **Valid Transitions (Happy Path)** | `DeploymentStateMachineTest` | Validates complete forward progression from `CREATED` to `COMPLETED`. |
+| 2 | **Invalid Transitions** | `DeploymentStateMachineTest` | Rejects illegal jumps (`CREATED` → `COMPLETED`, `RUNNING` → `CREDENTIALS_PENDING`). |
+| 3 | **Terminal State Protection** | `DeploymentStateMachineTest` | Rejects attempts to transition out of `COMPLETED` status. |
+| 4 | **Failure Transitions** | `DeploymentStateMachineTest` | Correctly transitions intermediate states to `FAILED` with error messages. |
+| 5 | **Retry Handling** | `DeploymentStateMachineTest` | Increments retry count on `RETRY_PENDING` and resumes workflow. |
+| 6 | **Manual Review Escalation** | `DeploymentStateMachineTest` | Transitions `FAILED` to `MANUAL_REVIEW` when max retries are exhausted. |
+| 7 | **Sequential Advancement** | `DeploymentWorkflowServiceTest` | Steps through creds acquisition, dispatch, running, deployment, and verification. |
+| 8 | **Completed Job Rejection** | `DeploymentWorkflowServiceTest` | Throws `DuplicateProcessingException` when trying to advance a completed job. |
+| 9 | **Retry Scheduling** | `DeploymentWorkflowServiceTest` | Automatically schedules `RETRY_PENDING` when attempts < max retries. |
+| 10 | **Max Retries Escalation** | `DeploymentWorkflowServiceTest` | Escalates to `MANUAL_REVIEW` when attempts reach max retries. |
+| 11 | **Manual Review Approval** | `DeploymentWorkflowServiceTest` | Admin unblocks review, returning job to `RETRY_PENDING`. |
+| 12 | **Concurrent Processing Guard** | `DeploymentWorkflowServiceTest` | Two simultaneous threads on same job: 1 succeeds, 1 receives `DuplicateProcessingException`. |
+| 13 | **PostgreSQL E2E Workflow** | `DeploymentWorkflowIntegrationTest` | Full database persistence, table updates, and audit logging on PostgreSQL 16. |
+
+---
+
 ## Running the Codebase Locally
 
 ### 1. Prerequisites
@@ -1128,6 +1255,12 @@ Expected output:
 [INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.deployment.planner.DeploymentPlannerIntegrationTest
 [INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.workflow.DeploymentStateMachineTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.workflow.DeploymentWorkflowServiceTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.workflow.DeploymentWorkflowIntegrationTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
@@ -1140,7 +1273,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 83, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 96, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
