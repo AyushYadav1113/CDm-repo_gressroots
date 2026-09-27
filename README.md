@@ -109,6 +109,28 @@ com.grassroots.cdm
 │   ├── MidServerClient.java             # ServiceNow MID Server queue contract
 │   ├── SectigoClient.java               # Sectigo CA renewal contract
 │   ├── ServiceNowClient.java            # Legacy bridge interface
+│   ├── sectigo                          # Sectigo Certificate Manager (SCM) Module
+│   │   ├── SectigoClient.java           # Modern HTTP client interface
+│   │   ├── SectigoIntegrationService.java # Domain integration & sync service
+│   │   ├── client/SectigoClientImpl.java # Production RestClient with retries
+│   │   ├── config/SectigoProperties.java # Externalized config binding
+│   │   ├── dto                          # Sectigo DTOs & envelope schemas
+│   │   │   ├── SectigoCertificateDto.java
+│   │   │   ├── SectigoErrorResponse.java
+│   │   │   ├── SectigoPageResponse.java
+│   │   │   └── StringListOrStringDeserializer.java
+│   │   ├── exception                    # Dedicated Sectigo exception hierarchy
+│   │   │   ├── SectigoAuthenticationException.java
+│   │   │   ├── SectigoClientException.java
+│   │   │   ├── SectigoException.java
+│   │   │   ├── SectigoParseException.java
+│   │   │   ├── SectigoRateLimitException.java
+│   │   │   ├── SectigoServerException.java
+│   │   │   └── SectigoTimeoutException.java
+│   │   ├── mapper/CertificateSectigoMapper.java # Normalization and entity mapper
+│   │   ├── mock/MockSectigoClient.java  # Offline dev & test mock client
+│   │   ├── model/SectigoCertificateItem.java # Decoupled intermediate model
+│   │   └── service/SectigoIntegrationServiceImpl.java # Production sync engine
 │   └── servicenow                       # ServiceNow CMDB Integration Module
 │       ├── ServiceNowClient.java        # Modern HTTP client interface
 │       ├── ServiceNowIntegrationService.java # Isolated domain integration service
@@ -445,6 +467,116 @@ flowchart TD
    - Enabled out-of-the-box in `application-local.yml` (`cdm.servicenow.mock-enabled=true`).
    - Provides an in-memory `MockServiceNowClient` allowing developers to run offline without live ServiceNow instances.
    - Fully tested with real HTTP wire protocols via WireMock (`ServiceNowClientWireMockTest`).
+
+---
+
+## Sectigo Certificate Manager (SCM) Integration Module
+
+The Sectigo integration module is responsible for retrieving newly issued and renewed SSL/TLS X.509 certificates from Sectigo Certificate Manager (SCM), normalizing certificate metadata, tracking renewal relationships, and idempotently synchronizing them into the CDM PostgreSQL repository.
+
+```
+       SectigoClient
+             ↓
+SectigoIntegrationService
+             ↓
+    CertificateRepository
+```
+
+### 1. Integration Architecture & Component Boundary
+
+```mermaid
+flowchart TD
+    subgraph Sectigo_Cloud [Sectigo SCM Cloud REST API]
+        SCM_LIST[GET /certificates?size=100&position=0&status=ISSUED]
+        SCM_DETAIL[GET /certificates/:id]
+        SCM_CHAIN[GET /certificates/:id/chain]
+    end
+
+    subgraph Transport_Tier [HTTP Transport Tier - Isolated]
+        SC[SectigoClient / SectigoClientImpl]
+        SPROPS[SectigoProperties\nBaseURL, customerUri, loginName, password, apiToken]
+        SMOCK[MockSectigoClient\nOffline Dev & Sandbox Mode]
+        SPROPS --> SC
+    end
+
+    subgraph Integration_Tier [Integration & Transformation Tier]
+        SIS[SectigoIntegrationService / SectigoIntegrationServiceImpl]
+        SMAPPER[CertificateSectigoMapper\nHex Normalizer & Resilient Date Parser]
+    end
+
+    subgraph Domain_Tier [CDM Core Domain & Persistence]
+        CREPO[(CertificateRecordRepository\nPostgreSQL certificates table)]
+        AUDIT[AuditService / PostgreSQL audit_logs table]
+    end
+
+    SCM_LIST <-->|HTTPS RestClient\nCustom Headers & Retries| SC
+    SCM_DETAIL <-->|HTTPS RestClient| SC
+    SCM_CHAIN <-->|Public X.509 PEM Chain| SC
+    SC -->|SectigoCertificateDto| SIS
+    SMOCK -.->|Simulated Payloads| SIS
+    SIS --> SMAPPER
+    SMAPPER -->|SectigoCertificateItem\nDecoupled Model| SIS
+    SMAPPER -->|CertificateRecord Entity| SIS
+    SIS -->|Idempotent Upsert| CREPO
+    SIS -->|CERTIFICATE_DISCOVERED\nCERTIFICATE_RENEWED| AUDIT
+```
+
+### 2. Execution Pipeline & Key Features
+
+1. **Strict 3-Tier Layered Architecture**:
+   - `SectigoClient` (Interface): Pure HTTP client contract isolating all endpoint paths, query parameter conventions, custom headers, and network fault handling.
+   - `SectigoClientImpl`: Production client using Spring 6 `RestClient` on `JdkClientHttpRequestFactory`, handling custom headers (`customerUri`, `loginName`, `password`, `Bearer token`), socket/read timeouts, exponential backoff retries, and error categorization.
+   - `SectigoIntegrationService`: Domain-facing facade coordinating batch and single-certificate synchronizations, orchestrating deduplication, detecting predecessor renewals, and writing structured audit trails.
+   - `CertificateRecordRepository`: Core PostgreSQL JPA repository.
+
+2. **How Sectigo Certificates Enter the CDM Database**:
+   - **Step 1 (Fetch)**: `SectigoIntegrationService.syncCertificates(correlationId)` calls `SectigoClient.fetchAllCertificates("ISSUED", correlationId)` which paginates through the SCM catalog using `size` and `position`.
+   - **Step 2 (Normalize & Sanitize)**: Raw `SectigoCertificateDto` objects pass through `CertificateSectigoMapper`. Serials and thumbprints are normalized to clean uppercase hex (stripping colons and spaces). SANs are extracted from lists or delimited strings. Dates are parsed via lenient fallback (ISO-8601, standard datetime, or epoch millis).
+   - **Step 3 (Idempotent Match & Deduplication)**:
+     The engine checks PostgreSQL in prioritized order:
+     1. External Sectigo Certificate ID (`external_id`)
+     2. SHA-256 Thumbprint (`thumbprint`, case-insensitive)
+     3. Serial Number + Issuer (`serial_number` + `issuer`)
+     4. Serial Number (`serial_number`)
+   - **Step 4 (Entity Upsert)**:
+     - **If Match Found**: Updates existing record's metadata, SANs, and validity dates in place without primary key modification (`outcome = UPDATED`).
+     - **If No Match Found**: Instantiates a new `CertificateRecord` with `source = CertificateSource.SECTIGO`, sets operational status (`ACTIVE`, `EXPIRING`, or `REVOKED`), and flushes to database (`outcome = CREATED`).
+   - **Step 5 (Renewal Correlation)**:
+     If Sectigo metadata includes `renewedFromCertificateId`, the service checks if the predecessor exists in CDM. If present, it logs a specialized `CERTIFICATE_RENEWED` audit event linking `oldCertificateId` to `newCertificateId`.
+   - **Step 6 (Audit Trail)**:
+     Publishes an immutable `AuditLogRecord` with action `CERTIFICATE_DISCOVERED` or `CERTIFICATE_RENEWED` containing valid JSON execution telemetry (`total`, `created`, `updated`, `unchanged`, `errors`, `durationMs`).
+
+3. **Fault Tolerance, Retries & Error Handling**:
+   - **Safe Retries Only**: Retries are applied strictly to transient failures:
+     - `SectigoRateLimitException` (HTTP 429): Parses `Retry-After` header and sleeps accordingly before retrying.
+     - `SectigoTimeoutException`: Connect/read timeouts trigger exponential backoff.
+     - `SectigoServerException` (HTTP 500, 502, 503, 504): Retries up to `maxRetries`.
+   - **Immediate Failures (Non-Retryable)**:
+     - `SectigoAuthenticationException` (HTTP 401/403): Aborts immediately to prevent account lockouts.
+     - `SectigoClientException` (HTTP 400/404): Thrown without retrying.
+     - `SectigoParseException` (Malformed JSON/HTML): Thrown immediately without retrying.
+
+4. **Zero Private Key & Secret Leakage Policy**:
+   - **No Plaintext Secrets**: Passwords, customer URIs, and API tokens are externalized via `cdm.sectigo.*` and masked in `toString()` outputs (`password=***`).
+   - **No Credential Logging**: Headers and request bodies containing authentication secrets are never written to application logs.
+   - **Public Chains Only**: `downloadCertificateChain` strictly accepts public X.509 certificate chains (PEM/DER). Private keys are never requested, accepted, or stored.
+
+5. **Local Development Mock**:
+   - Activated with `cdm.sectigo.mock-enabled=true` in `application-local.yml` and `.env`.
+   - Provides `MockSectigoClient` returning pre-seeded new and renewed certificates for seamless offline development.
+
+---
+
+### 3. Assumptions Requiring Confirmation from Real Sectigo SCM Specification
+
+| # | Assumption | Working Implementation in CDM | Confirmation Needed from Sectigo Team / Live Environment |
+|---|---|---|---|
+| **1** | **API Base Path & Endpoint** | Standard SCM REST endpoint `/certificates` on base URL `https://cert-manager.com/api/v1`. Configurable via `cdm.sectigo.certificates-path`. | Confirm if the organization's tenant uses `/api/v1/certificates` or `/api/ssl/v1/certificates` or custom proxy URLs. |
+| **2** | **Authentication Headers** | Custom headers `customerUri`, `loginName`, `password` (and optional `Authorization: Bearer <apiToken>`). | Confirm if production uses basic admin credentials with `customerUri`, dedicated API Tokens, or mutual TLS (client certificate) authentication. |
+| **3** | **Pagination Mechanism** | Paginates using query parameters `size` (page size) and `position` (0-indexed record offset). Response can be JSON array `[...]` or envelope `{"certificates": [...]}`. | Confirm exact query parameter names (`size` vs `pageSize`, `position` vs `page` or `offset`) and default/max page limits (e.g., max 200). |
+| **4** | **Renewal Linkage Field** | Maps `renewedFromCertificateId` (aliased to `renewedFromId`, `replacedCertificateId`) to identify predecessor certificates. | Confirm the exact JSON attribute name used by Sectigo when a certificate order is placed as a renewal of an existing certificate. |
+| **5** | **Rate Limiting & Headers** | Expects standard HTTP `429 Too Many Requests` with optional integer seconds `Retry-After` header. | Confirm SCM rate limit ceilings (e.g. requests per minute) and exact rate limit headers (`X-RateLimit-*`, `Retry-After`). |
+| **6** | **Certificate Chain Download Format** | `GET /certificates/:id/chain` returns standard public X.509 PEM bundle (`application/x-pem-file` or `text/plain`). | Confirm download endpoint path and whether output is concatenated PEM, PKCS#7 (`.p7b`), or ZIP bundle. |
 
 ---
 

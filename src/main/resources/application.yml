@@ -75,6 +75,19 @@ cdm:
     query-filter: ${SERVICENOW_QUERY_FILTER:active=true^ORDERBYDESCsys_updated_on}
     page-size: ${SERVICENOW_PAGE_SIZE:100}
     mock-enabled: ${SERVICENOW_MOCK_ENABLED:false}
+  sectigo:
+    base-url: ${SECTIGO_BASE_URL:https://cert-manager.com/api/v1}
+    customer-uri: ${SECTIGO_CUSTOMER_URI:}
+    login-name: ${SECTIGO_LOGIN_NAME:}
+    password: ${SECTIGO_PASSWORD:}
+    api-token: ${SECTIGO_API_TOKEN:}
+    connect-timeout-ms: ${SECTIGO_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${SECTIGO_READ_TIMEOUT_MS:10000}
+    max-retries: ${SECTIGO_MAX_RETRIES:3}
+    backoff-ms: ${SECTIGO_BACKOFF_MS:1000}
+    page-size: ${SECTIGO_PAGE_SIZE:100}
+    certificates-path: ${SECTIGO_CERTIFICATES_PATH:/certificates}
+    mock-enabled: ${SECTIGO_MOCK_ENABLED:false}
 
 logging:
   pattern:
