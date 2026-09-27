@@ -191,10 +191,20 @@ com.grassroots.cdm
 ├── service                              # Business service abstractions
 │   ├── SystemService.java               # Platform diagnostics interface
 │   └── impl/SystemServiceImpl.java      # System diagnostic implementation
-├── verification                         # Verification contracts
+├── verification                         # Live TLS Verification Engine
 │   ├── EndpointVerifier.java            # Live TLS endpoint handshake verification
 │   ├── NextDayDiscoveryVerifier.java    # ServiceNow discovery reconciliation
-│   └── VerificationResult.java          # Handshake validation result
+│   ├── VerificationResult.java          # Handshake validation result with VerificationStatus
+│   ├── VerificationStatus.java          # Status enum (VERIFIED, FAILED, UNREACHABLE, CERTIFICATE_MISMATCH, TLS_ERROR)
+│   ├── VerificationRequest.java         # Criteria builder (host, port, thumbprint, serial, SAN, issuer)
+│   ├── VerificationService.java         # Verification engine interface
+│   ├── CertificateInspectionService.java# Live TLS endpoint inspection interface
+│   ├── impl/
+│   │   ├── DefaultVerificationService.java          # Core verification rule evaluator & audit recorder
+│   │   └── DefaultCertificateInspectionService.java # Scoped TLS connection & X.509 cert extraction
+│   └── model/
+│       ├── InspectedCertificate.java    # Presented certificate model (RFC 6125 wildcard & multi-SAN)
+│       └── InspectionOutcome.java       # Raw TLS connection & inspection outcome
 └── workflow                             # Multi-step state machine engine
     ├── WorkflowContext.java             # Contextual workflow state
     └── WorkflowEngine.java              # Step execution engine contract
@@ -1291,7 +1301,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 184, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 207, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
@@ -1838,7 +1848,90 @@ If the target keystore installation already holds the target certificate thumbpr
 
 ---
 
-## 12. Common Troubleshooting
+## 12. Verification Engine
+
+The **Verification Engine** validates that the certificate actively being served by a live TLS endpoint matches the expected certificate, possesses valid cryptographic properties, and is bound to the appropriate hostname.
+
+### Architecture
+
+```mermaid
+flowchart TD
+    A[Deployment Job / Request] --> B[VerificationService]
+    B --> C[CertificateInspectionService]
+    C -->|Isolated Scoped TLS Handshake + SNI| D[Live TLS Endpoint]
+    D -->|X.509 Certificate Chain| C
+    C -->|InspectedCertificate| B
+    B --> E{Rule Validation Engine}
+    E -->|Temporal Validity Dates| F1[Not Expired & Not Premature]
+    E -->|RFC 6125 Hostname & SANs| F2[Matches DNS SANs / Wildcards / IP]
+    E -->|Identity Match| F3[Matches Expected SHA-256 / SHA-1 Thumbprint]
+    E -->|Serial & Issuer| F4[Matches Expected Serial Number & Issuer]
+    F1 & F2 & F3 & F4 -->|All Passed| G[VERIFIED]
+    E -->|Thumbprint / Serial Mismatch| H[CERTIFICATE_MISMATCH]
+    E -->|Expired / Hostname Mismatch| I[FAILED]
+    C -->|Connection Refused / Timeout| J[UNREACHABLE]
+    C -->|Handshake Failure / Non-TLS| K[TLS_ERROR]
+    G & H & I & J & K --> L[VerificationResult + Audit Trail]
+```
+
+### Verification Outcomes & Statuses
+
+| Status | Outcome | Description & Trigger Conditions |
+|---|---|---|
+| `VERIFIED` | Success (`verified = true`) | Endpoint TLS connection succeeded; active certificate thumbprint, serial, validity dates, and hostname match expected criteria. |
+| `CERTIFICATE_MISMATCH` | Failure (`verified = false`) | Endpoint is reachable and completed TLS handshake, but served a different certificate (thumbprint, serial number, or issuer mismatch). Common when an old certificate is still active or wrong binding was applied. |
+| `FAILED` | Failure (`verified = false`) | Endpoint served the certificate, but certificate fails validity checks (e.g. certificate has expired, is not yet valid, or hostname does not match Common Name or Subject Alternative Names). |
+| `UNREACHABLE` | Failure (`verified = false`) | Target endpoint cannot be reached (connection refused, host unknown, socket connection timeout, network partition). |
+| `TLS_ERROR` | Failure (`verified = false`) | Handshake failed at TLS transport/cryptographic layer (cipher suite mismatch, unsupported protocol, non-TLS server, EOF during handshake). |
+
+---
+
+### Verification Capabilities
+
+The Verification Engine validates all 10 core attributes:
+1. **DNS / Hostname**: Sends SNI (`SNIHostName`) during handshake and evaluates hostname match against certificate SANs or Common Name.
+2. **Port**: Connects to target application port (e.g. 443, 8443) with input bounds validation (1..65535).
+3. **TLS Connection**: Establishes TLS connection with configurable `connectTimeoutMs` and `readTimeoutMs`.
+4. **Presented Certificate**: Captures and encapsulates the full X.509 certificate and chain in `InspectedCertificate`.
+5. **Thumbprint**: Computes SHA-256 and SHA-1 normalized fingerprints, matching case-insensitively with colon/dash/space stripping.
+6. **Serial Number**: Matches serial numbers in both hexadecimal (`0x1A2B`, `1A2B`) and decimal `BigInteger` formats.
+7. **Common Name**: Extracts CN from Subject DN per RFC 2253 with regex fallback.
+8. **Subject Alternative Names (SAN)**: Parses DNS names and IP addresses; handles multiple SANs and single-level wildcard matching (`*.example.com` per RFC 6125).
+9. **Validity Dates**: Checks `notBefore` and `notAfter` against current wall-clock time (`isExpired()`, `isNotYetValid()`).
+10. **Issuer**: Compares expected certificate issuer against presented Issuer DN and Issuer Common Name.
+
+---
+
+### Security Boundaries & Invariants
+
+| Security Rule | Enforcement Mechanism |
+|---|---|
+| **Zero Global TLS Modification** | Never invokes `SSLContext.setDefault()` or `HttpsURLConnection.setDefaultSSLSocketFactory()`. All SSL contexts and socket factories are strictly scoped to the individual inspection connection. |
+| **No Blind Acceptance** | Every presented certificate is rigorously evaluated across validity dates, hostname/SAN, thumbprint, and serial. Untrusted or invalid certificates are rejected with specific status codes (`FAILED`, `CERTIFICATE_MISMATCH`). |
+| **SNI Compliance** | SNI host names are sent only for domain names; raw IPv4/IPv6 addresses are excluded from SNI to comply with RFC 6066. |
+| **Audit Logging** | Every verified deployment records an immutable audit event (`AuditAction.LIVE_ENDPOINT_VERIFIED`) with actor, outcome, and diagnostic details. |
+
+---
+
+### Local Test Infrastructure
+
+Testing uses real in-memory HTTPS servers (`com.sun.net.httpserver.HttpsServer`) on ephemeral ports rather than mock-only verification:
+- `TlsTestHelper.createTestKeystore()`: Generates realistic PKCS12 test keystores via standard `keytool` with custom SANs, wildcards, start dates, and validity periods.
+- `TlsTestHelper.startHttpsServer()`: Starts a local TLS server serving the test keystore.
+- `TlsTestHelper.startFaultyTlsServer()`: Starts a raw TCP socket server emitting non-TLS data to test `TLS_ERROR` handling.
+- Test suites cover:
+  - Valid matching certificate (`VERIFIED`)
+  - Expired certificate (`FAILED`)
+  - Hostname mismatch (`FAILED`)
+  - Thumbprint mismatch (`CERTIFICATE_MISMATCH`)
+  - Serial number mismatch (`CERTIFICATE_MISMATCH`)
+  - Unreachable closed port (`UNREACHABLE`)
+  - Faulty handshake (`TLS_ERROR`)
+  - Multiple SANs & Wildcard domain matching
+
+---
+
+## 13. Common Troubleshooting
 
 | Issue | Cause | Resolution |
 |---|---|---|
@@ -1847,6 +1940,11 @@ If the target keystore installation already holds the target certificate thumbpr
 | `Connection refused: localhost:5432` | PostgreSQL is not started. | Start PostgreSQL with `docker compose up -d postgres` or `brew services start postgresql@16`. |
 | `Docker daemon is not running` (during `./mvnw test`) | Docker Desktop is not started. | Open Docker Desktop (`open -a Docker` on macOS). |
 | `MID Server returns HTTP 409 Conflict` | Duplicate task submission with same idempotency key. | Verify idempotency key generation or retrieve existing task status using `midServerClient.getJobStatus(taskId)`. |
+| `VerificationStatus.CERTIFICATE_MISMATCH` | Active certificate on endpoint does not match expected thumbprint or serial. | Verify deployment reload step succeeded and that IIS/Apache/Nginx/Java bound the new certificate. |
+| `VerificationStatus.FAILED (Hostname mismatch)` | Certificate CN or SANs do not match the target endpoint host. | Check certificate Subject Alternative Names and ensure endpoint URL matches one of the SANs or wildcard patterns. |
+| `VerificationStatus.FAILED (Expired)` | Certificate presented by target endpoint is past its `valid_to` date. | Check target server time and ensure the renewed certificate was deployed rather than the expiring certificate. |
+| `VerificationStatus.UNREACHABLE` | Target endpoint port is not listening or firewall blocked TCP connection. | Ensure application service is running and firewall allows traffic on the target port (e.g. 443, 8443). |
+| `VerificationStatus.TLS_ERROR` | Endpoint responded with non-TLS data or cipher suite/protocol handshake failed. | Verify endpoint is configured for HTTPS/TLS (not plain HTTP) and supports TLSv1.2 or TLSv1.3. |
 | `IisCertificateImportException (Exit Code 101)` | Corrupted PFX bundle or incorrect password from CyberArk. | Verify certificate vault payload integrity in CyberArk safe. |
 | `IisPermissionException (Exit Code 102)` | Insufficient permissions to modify ACLs on Windows MachineKeys. | Ensure the MID Server service account has administrative rights on target Windows host. |
 | `IisBindingUpdateException (Exit Code 103)` | SSL binding conflict or port 443 already bound to another site without SNI. | Enable SNI (`requireSni = true`) or resolve port binding collisions in IIS. |
@@ -1863,6 +1961,7 @@ If the target keystore installation already holds the target certificate thumbpr
 | `ApplicationRestartException (Exit Code 304)` | Java application failed to restart under specified `RestartStrategy`. | Inspect `journalctl -u {serviceName}` or application log file; rollback automatically restores backup keystore. |
 | `JavaEndpointVerificationException (Exit Code 305)` | TLS handshake probe on port 8443 returned previous certificate thumbprint or connection was refused. | Verify port binding, firewall rules, and virtual host configuration. Rollback automatically restores backup keystore. |
 | `JavaRollbackException` | Failed to restore `{keystoreLocation}.cdm-bak` or restart previous configuration. | Manual intervention required: inspect backup keystore file and restart application service manually. |
+
 
 
 
