@@ -151,9 +151,32 @@ com.grassroots.cdm
 │       ├── mock/MockServiceNowClient.java    # Offline dev & test mock client
 │       ├── model/DiscoveredCertificateItem.java # Decoupled integration model
 │       └── service/ServiceNowIntegrationServiceImp.java
-├── matching                             # Certificate correlation engine
+├── matching                             # Certificate correlation & matching engine
 │   ├── CertificateMatcher.java          # Matching strategy contract
-│   └── MatchResult.java                 # Match evaluation outcome
+│   ├── MatchResult.java                 # Match evaluation outcome
+│   ├── config/MatchingProperties.java   # Configurable thresholds and signal weights
+│   ├── evaluator                        # Multi-attribute signal evaluators
+│   │   ├── MatchSignalEvaluator.java    # Evaluator strategy interface
+│   │   └── impl/
+│   │       ├── CommonNameMatchEvaluator.java # CN equality & wildcard matching
+│   │       ├── IssuerContinuityEvaluator.java # CA organization continuity
+│   │       ├── LifecycleEvaluator.java  # Validity extension & expiration check
+│   │       ├── RenewalLinkageEvaluator.java # Sectigo CA renewal order linkage
+│   │       └── SanMatchEvaluator.java   # SAN set similarity & superset matching
+│   ├── generator                        # Candidate pre-screening & generation
+│   │   ├── CandidateGenerator.java      # Candidate generation contract
+│   │   └── impl/DefaultCandidateGenerator.java # Deduplication & self-exclusion
+│   ├── impl/ScoringCertificateMatcher.java # Deterministic scoring & ambiguity handler
+│   ├── model                            # Match model & evaluation records
+│   │   ├── CandidateMatchResult.java    # Final matching result with JSON telemetry
+│   │   ├── MatchDecision.java           # AUTOMATIC_MATCH, REVIEW_REQUIRED, NO_MATCH
+│   │   ├── MatchReason.java             # Individual signal score breakdown
+│   │   ├── MatchSignal.java             # Signal type categorization enum
+│   │   └── ScoredCandidate.java         # Ranked candidate with tie-breakers
+│   ├── normalizer/DomainNameNormalizer.java # RFC-compliant DNS & wildcard parsing
+│   └── service                          # Matching orchestration & persistence
+│       ├── CertificateMatchingService.java # Orchestration contract
+│       └── impl/CertificateMatchingServiceImpl.java # Replacement & audit persistence
 ├── repository                           # Spring Data JPA repositories
 │   ├── AuditLogRecordRepository.java
 │   ├── CertificateInstallationRepository.java
@@ -577,6 +600,168 @@ flowchart TD
 | **4** | **Renewal Linkage Field** | Maps `renewedFromCertificateId` (aliased to `renewedFromId`, `replacedCertificateId`) to identify predecessor certificates. | Confirm the exact JSON attribute name used by Sectigo when a certificate order is placed as a renewal of an existing certificate. |
 | **5** | **Rate Limiting & Headers** | Expects standard HTTP `429 Too Many Requests` with optional integer seconds `Retry-After` header. | Confirm SCM rate limit ceilings (e.g. requests per minute) and exact rate limit headers (`X-RateLimit-*`, `Retry-After`). |
 | **6** | **Certificate Chain Download Format** | `GET /certificates/:id/chain` returns standard public X.509 PEM bundle (`application/x-pem-file` or `text/plain`). | Confirm download endpoint path and whether output is concatenated PEM, PKCS#7 (`.p7b`), or ZIP bundle. |
+
+---
+
+## Certificate Matching Engine
+
+The **Certificate Matching Engine** correlates expiring or currently installed SSL/TLS certificates discovered from ServiceNow (`CertificateSource.SERVICENOW`) with newly issued or renewed replacement certificates retrieved from Sectigo (`CertificateSource.SECTIGO`).
+
+```
+OLD CERT
+    ↓
+Candidate generation
+    ↓
+Scoring
+    ↓
+Decision
+    ↓
+Replacement record
+```
+
+### 1. Matching Architecture & Component Boundaries
+
+```mermaid
+flowchart TD
+    subgraph Input_Phase [1. Input Certificates]
+        OLD_CERT["Existing Certificate Record\n(ServiceNow CMDB / Target Server)"]
+        NEW_POOL["Candidate Pool\n(Sectigo SCM / PostgreSQL)"]
+    end
+
+    subgraph Candidate_Generation [2. Candidate Generation & Pre-screening]
+        GEN["DefaultCandidateGenerator\n- Exclude self-matches\n- Deduplicate by thumbprint / ID\n- Discard unplausible records"]
+    end
+
+    subgraph Scoring_Engine [3. Multi-Attribute Scoring Engine]
+        MATCHER["ScoringCertificateMatcher"]
+        SAN_EVAL["SanMatchEvaluator (Weight: 0.35)\nExact, Superset, Jaccard, Wildcard"]
+        CN_EVAL["CommonNameMatchEvaluator (Weight: 0.25)\nExact DNS, Wildcard RFC 6125, SAN Fallback"]
+        REN_EVAL["RenewalLinkageEvaluator (Weight: 0.20)\nSectigo CA Order Linkage & External IDs"]
+        LIFE_EVAL["LifecycleEvaluator (Weight: 0.10)\nValidTo Extension & Expiration Disqualification"]
+        ISS_EVAL["IssuerContinuityEvaluator (Weight: 0.10)\nCA Hierarchy & Organization Continuity"]
+
+        MATCHER --> SAN_EVAL
+        MATCHER --> CN_EVAL
+        MATCHER --> REN_EVAL
+        MATCHER --> LIFE_EVAL
+        MATCHER --> ISS_EVAL
+    end
+
+    subgraph Decision_Phase [4. Decision & Ambiguity Prevention]
+        DECIDE{"Decision Gate"}
+        AUTO["AUTOMATIC_MATCH\nScore >= 0.85 & Non-Ambiguous"]
+        REVIEW["REVIEW_REQUIRED\nScore >= 0.60 OR Ambiguous Competitors"]
+        NO_MATCH["NO_MATCH\nScore < 0.60 or Disqualified"]
+    end
+
+    subgraph Persistence_Phase [5. Replacement Record & Audit]
+        SVC["CertificateMatchingServiceImpl"]
+        REPLACE_REPO[("certificate_replacements Table\n(old_cert_id, new_cert_id, score, JSON reasons)")]
+        AUDIT_LOG[("audit_logs Table\n(CERTIFICATE_MATCHED Action)")]
+    end
+
+    OLD_CERT --> GEN
+    NEW_POOL --> GEN
+    GEN --> MATCHER
+    MATCHER --> DECIDE
+    DECIDE -->|Score >= 0.85 without ambiguity| AUTO
+    DECIDE -->|Score 0.60 - 0.84 OR top 2 delta <= 0.05| REVIEW
+    DECIDE -->|Score < 0.60 or all disqualified| NO_MATCH
+    AUTO --> SVC
+    REVIEW --> SVC
+    SVC --> REPLACE_REPO
+    SVC --> AUDIT_LOG
+```
+
+---
+
+### 2. Multi-Attribute Scoring Heuristics & Configurable Weights
+
+To eliminate single-point-of-failure matching (e.g. naive string matching on Common Name alone), the engine evaluates **five distinct weighted signals** producing a deterministic normalized score between `0.0` and `1.0`:
+
+| Signal Evaluator | Weight | Scoring Logic | Description |
+|---|:---:|---|---|
+| **SAN Match** (`SanMatchEvaluator`) | **0.35** | `1.00`: Exact set match<br>`0.90`: Candidate is superset<br>`0.85`: Full wildcard coverage<br>`Jaccard`: Partial overlap (`\|old ∩ new\| / \|old ∪ new\|`)<br>`0.00`: Disjoint SANs | Evaluates Subject Alternative Name sets after RFC 6125 normalization. Prevents deployment to servers hosting different hostnames. |
+| **Common Name Match** (`CommonNameMatchEvaluator`) | **0.25** | `1.00`: Exact normalized match<br>`0.80`: RFC 6125 wildcard match<br>`0.70`: CN found in SANs<br>`0.00`: Complete mismatch | Normalizes FQDNs (stripping protocols, trailing dots, ports, lowercase) and evaluates wildcard rules. |
+| **Renewal Linkage** (`RenewalLinkageEvaluator`) | **0.20** | `1.00`: Identical external CA order ID<br>`0.80`: Correlated external ID pointer (e.g. `renewedFromCertificateId`)<br>`0.00`: No declared CA renewal reference | Exploits explicit CA metadata from Sectigo SCM to definitively tie renewed certificates to their predecessors. |
+| **Lifecycle Validity** (`LifecycleEvaluator`) | **0.10** | `1.00`: Candidate `validTo` extends past old `validTo`<br>`0.30`: Identical expiration date<br>`0.00`: Expired or expires earlier than existing | Validates that the replacement is an actual renewal that extends operational lifespan. Disqualifies expired candidate certificates. |
+| **Issuer Continuity** (`IssuerContinuityEvaluator`) | **0.10** | `1.00`: Identical CA issuer string<br>`0.80`: Same CA root/intermediate family (e.g. Sectigo)<br>`0.00`: Disjoint CA organizations | Checks Certificate Authority continuity across renewals. |
+
+---
+
+### 3. Configurable Assumptions & Ambiguity Prevention
+
+All matching parameters are externalized under `cdm.matching.*` to ensure full transparency and production adaptability:
+
+```yaml
+cdm:
+  matching:
+    auto-match-threshold: 0.85        # Minimum score for automatic deployment matching
+    review-threshold: 0.60            # Minimum score to retain candidate for manual review
+    ambiguity-margin: 0.05            # Maximum gap between rank #1 and #2 to trigger ambiguity
+    san-weight: 0.35                  # Weight for SAN set similarity
+    cn-weight: 0.25                  # Weight for Common Name matching
+    renewal-linkage-weight: 0.20      # Weight for CA renewal order linkage
+    lifecycle-weight: 0.10            # Weight for validity extension
+    issuer-weight: 0.10               # Weight for CA issuer continuity
+    reject-expired-candidates: true   # Strict disqualification for expired candidates
+    require-validity-extension: true  # Requires new validTo > old validTo
+    allow-wildcard-expansion: true    # RFC 6125 wildcard expansion permitted
+```
+
+#### Ambiguity Prevention Gate:
+A critical safety requirement of CDM is that **no ambiguous match may ever be automatically scheduled for deployment**:
+- If multiple candidates are evaluated and the difference between the **top candidate's score** and the **runner-up candidate's score** is within `ambiguity-margin` (e.g. `0.90` vs `0.88`, diff = `0.02 <= 0.05`), the engine **downgrades the decision to `REVIEW_REQUIRED`** (persisted as `MatchStatus.PENDING_REVIEW`).
+- This guarantees that when two similar wildcard or multi-domain certificates compete, human authorization is enforced prior to MID Server deployment.
+
+---
+
+### 4. Decision Lifecycle & Outcomes
+
+| Decision (`MatchDecision`) | DB Status (`MatchStatus`) | Score Condition | Action Taken |
+|---|---|---|---|
+| **`AUTOMATIC_MATCH`** | `AUTO_MATCHED` | `Score >= 0.85` AND Non-Ambiguous | Creates/updates `CertificateReplacement`. Qualified for immediate automated deployment job creation. |
+| **`REVIEW_REQUIRED`** | `PENDING_REVIEW` | `0.60 <= Score < 0.85` OR Ambiguous (`delta <= 0.05`) | Creates/updates `CertificateReplacement` flagged for administrator confirmation in dashboard. |
+| **`NO_MATCH`** | `REJECTED` / None | `Score < 0.60` OR Disqualified | No replacement created. Audit trail recorded. |
+
+---
+
+### 5. Deterministic DNS Normalization & Wildcard Rules
+
+All domain strings undergo canonicalization via `DomainNameNormalizer`:
+- **Case Normalization**: `API.EXAMPLE.COM` → `api.example.com`
+- **Whitespace & Delimiters**: Trailing/leading spaces, quotes, and brackets stripped
+- **FQDN Trailing Dots**: `api.example.com.` → `api.example.com`
+- **Protocol & Port Stripping**: `https://api.example.com:443` → `api.example.com`
+- **RFC 6125 Wildcard Matching**:
+  - `*.example.com` matches `api.example.com`, `auth.example.com`
+  - `*.example.com` does **not** match `sub.api.example.com` (cannot cross label boundaries)
+  - `*.example.com` does **not** match apex `example.com`
+  - `*.example.com` matches `*.example.com` (identical wildcard equality)
+
+---
+
+### 6. Test Suite Coverage
+
+The matching engine is validated by **15 dedicated tests** covering all operational scenarios:
+
+| # | Test Scenario | Test Class | Validated Behavior |
+|---|---|---|---|
+| 1 | **Exact Match** | `CertificateMatcherUnitTest` | CN, SAN, CA, and renewal link match perfectly → Score `1.0`, `AUTOMATIC_MATCH`. |
+| 2 | **SAN Match** | `CertificateMatcherUnitTest` | CN differs or is a host alias, but SAN superset covers all services → Score `>= 0.60`. |
+| 3 | **Common Name Match** | `CertificateMatcherUnitTest` | Single-name certificates without SANs match on CN → Score `1.0`. |
+| 4 | **Different SAN** | `CertificateMatcherUnitTest` | Disjoint SAN domains (`app.com` vs `billing.com`) → Score `< 0.60`, `NO_MATCH`. |
+| 5 | **Wildcard Certificates** | `CertificateMatcherUnitTest` | `*.example.com` matches single-level subdomains; rejects deep subdomains. |
+| 6 | **Multiple Candidates** | `CertificateMatcherUnitTest` | Ranks 3 competing candidates by score and selects highest quality match. |
+| 7 | **No Candidates** | `CertificateMatcherUnitTest` | Empty candidate pool cleanly returns `NO_MATCH` without exceptions. |
+| 8 | **Ambiguous Candidates** | `CertificateMatcherUnitTest` | Two candidates within `0.05` margin → Downgraded to `REVIEW_REQUIRED`. |
+| 9 | **Expired Certificates** | `CertificateMatcherUnitTest` | Expired candidate (`validTo < now()`) is disqualified with score `0.0`. |
+| 10 | **Wrong Certificate** | `CertificateMatcherUnitTest` | Completely unrelated domain (`bank.com` vs `shop.com`) → `NO_MATCH`. |
+| 11 | **Case Differences** | `CertificateMatcherUnitTest` | `API.EXAMPLE.COM` matches `api.example.com` with score `1.0`. |
+| 12 | **DNS Normalization** | `CertificateMatcherUnitTest` | Handles ports (`:443`), trailing dots, and `DNS:` prefixes. |
+| 13 | **Duplicate Candidates** | `CertificateMatcherUnitTest` | Duplicate candidate objects are deduplicated deterministically. |
+| 14 | **End-to-End Persistence** | `CertificateMatchingServiceIntegrationTest` | Persists `CertificateReplacement` and `JSONB` audit details in PostgreSQL. |
+| 15 | **Ambiguous Persistence** | `CertificateMatchingServiceIntegrationTest` | Persists `MatchStatus.PENDING_REVIEW` when ambiguity threshold is met. |
 
 ---
 

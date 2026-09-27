@@ -88,6 +88,18 @@ cdm:
     page-size: ${SECTIGO_PAGE_SIZE:100}
     certificates-path: ${SECTIGO_CERTIFICATES_PATH:/certificates}
     mock-enabled: ${SECTIGO_MOCK_ENABLED:false}
+  matching:
+    auto-match-threshold: ${MATCHING_AUTO_THRESHOLD:0.85}
+    review-threshold: ${MATCHING_REVIEW_THRESHOLD:0.60}
+    ambiguity-margin: ${MATCHING_AMBIGUITY_MARGIN:0.05}
+    san-weight: ${MATCHING_SAN_WEIGHT:0.35}
+    cn-weight: ${MATCHING_CN_WEIGHT:0.25}
+    renewal-linkage-weight: ${MATCHING_RENEWAL_WEIGHT:0.20}
+    lifecycle-weight: ${MATCHING_LIFECYCLE_WEIGHT:0.10}
+    issuer-weight: ${MATCHING_ISSUER_WEIGHT:0.10}
+    reject-expired-candidates: ${MATCHING_REJECT_EXPIRED:true}
+    require-validity-extension: ${MATCHING_REQUIRE_EXTENSION:true}
+    allow-wildcard-expansion: ${MATCHING_ALLOW_WILDCARD:true}
 
 logging:
   pattern:

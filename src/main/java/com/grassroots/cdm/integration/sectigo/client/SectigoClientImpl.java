@@ -126,12 +126,8 @@ public class SectigoClientImpl implements SectigoClient {
             } catch (RestClientResponseException ex) {
                 handleHttpError(ex.getStatusCode().value(), ex.getResponseBodyAsByteArray(), ex.getResponseHeaders());
                 return Collections.emptyList();
-            } catch (ResourceAccessException ex) {
-                throw translateResourceAccessException(ex);
-            } catch (SectigoException ex) {
-                throw ex;
             } catch (Exception ex) {
-                throw new SectigoParseException("Failed reading certificate list response: " + ex.getMessage(), ex);
+                throw translateException(ex);
             }
         }, resolvedCorrelationId);
     }
@@ -199,12 +195,8 @@ public class SectigoClientImpl implements SectigoClient {
                 }
                 handleHttpError(ex.getStatusCode().value(), ex.getResponseBodyAsByteArray(), ex.getResponseHeaders());
                 return Optional.empty();
-            } catch (ResourceAccessException ex) {
-                throw translateResourceAccessException(ex);
-            } catch (SectigoException ex) {
-                throw ex;
             } catch (Exception ex) {
-                throw new SectigoParseException("Failed reading certificate details: " + ex.getMessage(), ex);
+                throw translateException(ex);
             }
         }, resolvedCorrelationId);
     }
@@ -235,12 +227,8 @@ public class SectigoClientImpl implements SectigoClient {
             } catch (RestClientResponseException ex) {
                 handleHttpError(ex.getStatusCode().value(), ex.getResponseBodyAsByteArray(), ex.getResponseHeaders());
                 return new byte[0];
-            } catch (ResourceAccessException ex) {
-                throw translateResourceAccessException(ex);
-            } catch (SectigoException ex) {
-                throw ex;
             } catch (Exception ex) {
-                throw new SectigoParseException("Failed downloading certificate chain: " + ex.getMessage(), ex);
+                throw translateException(ex);
             }
         }, resolvedCorrelationId);
     }
@@ -328,11 +316,33 @@ public class SectigoClientImpl implements SectigoClient {
         return null;
     }
 
-    private SectigoException translateResourceAccessException(ResourceAccessException ex) {
-        if (ex.getCause() instanceof SocketTimeoutException || ex.getMessage().contains("timed out")) {
+    private SectigoException translateException(Exception ex) {
+        if (ex instanceof SectigoException se) {
+            return se;
+        }
+        if (isTimeout(ex)) {
             return new SectigoTimeoutException("Sectigo connection or socket timed out: " + ex.getMessage(), ex);
         }
-        return new SectigoServerException("Sectigo unreachable: " + ex.getMessage(), 503, ex);
+        if (ex instanceof ResourceAccessException rae) {
+            return new SectigoServerException("Sectigo unreachable: " + rae.getMessage(), 503, rae);
+        }
+        return new SectigoParseException("Failed processing Sectigo response: " + ex.getMessage(), ex);
+    }
+
+    private boolean isTimeout(Throwable t) {
+        if (t == null) {
+            return false;
+        }
+        if (t instanceof SocketTimeoutException
+                || t instanceof java.net.http.HttpTimeoutException
+                || t instanceof java.util.concurrent.TimeoutException) {
+            return true;
+        }
+        String msg = t.getMessage() != null ? t.getMessage().toLowerCase() : "";
+        if (msg.contains("timed out") || msg.contains("timeout") || msg.contains("time out")) {
+            return true;
+        }
+        return isTimeout(t.getCause());
     }
 
     private <T> T executeWithRetry(RetryableOperation<T> operation, String correlationId) {
