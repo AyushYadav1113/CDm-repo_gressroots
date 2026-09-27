@@ -1267,6 +1267,10 @@ Expected output:
 [INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.deployment.dispatcher.DeploymentDispatcherTest
 [INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.adapter.iis.IisDeploymentAdapterTest
+[INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.adapter.DeploymentAdapterRegistryTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
@@ -1279,7 +1283,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 116, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 130, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
@@ -1443,12 +1447,114 @@ The **MID Server Integration** connects the Certificate Deployment Manager (CDM)
 4. **Execution Status Persistence (Flyway V4)**:
    - Migration `V4__mid_server_execution_tracking.sql` creates `mid_server_executions` table.
    - Stores every dispatch attempt, exit codes, output summaries, and audit correlation IDs.
-5. **Local Development Simulation**:
-   - `MockMidServerClient` (`cdm.midserver.mock-enabled=true`) allows complete offline testing without physical MID servers.
+---
+
+## 9. IIS / Windows Deployment Adapter Architecture
+
+The **IIS Deployment Adapter** ([`IisDeploymentAdapter`](src/main/java/com/grassroots/cdm/deployment/adapter/iis/IisDeploymentAdapter.java)) provides certified orchestration for SSL/TLS certificate deployments targeting Microsoft Internet Information Services (IIS) on Windows Server platforms.
+
+### Architectural Rule: Execution Boundary
+
+> [!IMPORTANT]
+> The CDM backend **never** executes arbitrary PowerShell or cmd.exe shell strings directly against target Windows servers.
+> All executions are packaged into structured command objects ([`IisDeploymentCommand`](src/main/java/com/grassroots/cdm/deployment/adapter/iis/model/IisDeploymentCommand.java)) and dispatched to the **ServiceNow MID Server**, which executes certified local management procedures inside the target network.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        CDM Core Platform                               │
+│  - DeploymentAdapter & DeploymentAdapterRegistry                       │
+│  - IisDeploymentAdapter: Pre-validation, Step Orchestration, Rollback  │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ Structured IisDeploymentCommand via MidServerClient
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     ServiceNow MID Server Node                         │
+│  - Safe Execution Boundary (no ad-hoc shell execution from CDM)        │
+│  - Executes 5 Certified Steps via local PowerShell / WinRM             │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ Local Windows Cryptographic API & IIS Management
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     Windows Server & IIS Target                        │
+│  1. Import PFX into Cert:\LocalMachine\My                             │
+│  2. Grant MachineKeys Read ACL to IIS_IUSRS & W3SVC                    │
+│  3. Bind target thumbprint to Site port 443 via WebAdministration      │
+│  4. Verify TLS handshake and active binding thumbprint                 │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 9. Common Troubleshooting
+### The 5 Conceptual Deployment Steps
+
+```
+[1. IMPORT CERTIFICATE] ────► [2. ENSURE KEY ACLs] ────► [3. UPDATE BINDING] ────► [4. VERIFY BINDING]
+          │                             │                          │                         │
+      (Failure)                     (Failure)                  (Failure)                 (Failure)
+          │                             │                          │                         │
+          ▼                             ▼                          ▼                         ▼
+   Fail immediately              Fail immediately           Trigger Rollback          Trigger Rollback
+   (No binding modified)         (No binding modified)      to Old Thumbprint         to Old Thumbprint
+```
+
+1. **Step 1: Import Certificate**:
+   - Imports the certificate and private key bundle into the `Cert:\LocalMachine\My` (Personal) store.
+   - Preserves key container attributes and marks the key as exportable if configured.
+   - Failure: Throws `IisCertificateImportException` (Exit Code 101). No rollback needed because IIS binding is not yet altered.
+2. **Step 2: Ensure Private Key Permissions**:
+   - Grants NTFS / CNG Read permissions on the private key file (`C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys` or CNG storage) to `IIS_IUSRS` and `NT SERVICE\W3SVC`.
+   - Prevents HTTP 500.19 or SSL Handshake errors caused by application pool identity permission issues.
+   - Failure: Throws `IisPermissionException` (Exit Code 102). No rollback needed.
+3. **Step 3: Update IIS HTTPS Binding**:
+   - Backs up the current active certificate thumbprint.
+   - Attaches the new certificate thumbprint to the specified site (e.g. `Default Web Site` or custom binding) on port 443 via IIS `WebAdministration` / `netsh http add sslcert`.
+   - Failure: Throws `IisBindingUpdateException` (Exit Code 103). Triggers automated rollback to restore the previous thumbprint.
+4. **Step 4: Verify IIS Binding**:
+   - Queries `netsh http show sslcert` or IIS binding object to verify the active certificate thumbprint exactly matches the new certificate.
+   - Probes the HTTPS endpoint to confirm an active, error-free TLS handshake.
+   - Failure: Throws `IisVerificationException` (Exit Code 104). Triggers automated rollback to restore the previous thumbprint.
+5. **Step 5: Execution Reporting & Audit**:
+   - Assembles detailed `DeploymentAdapterResult` containing step-by-step durations and telemetry.
+   - Updates `CertificateInstallation` status to `INSTALLED` and records audit event `LIVE_ENDPOINT_VERIFIED`.
+
+---
+
+### Pre-Deployment Validation Rules
+
+Before dispatching any commands to the MID Server, [`IisDeploymentAdapter.validate(job)`](src/main/java/com/grassroots/cdm/deployment/adapter/iis/IisDeploymentAdapter.java) enforces:
+- **Operating System Check**: Target server operating system must strictly be `WINDOWS_SERVER`.
+- **Technology Check**: Target server technology must strictly be `IIS`.
+- **Port Bounds**: Target port must be between 1 and 65535 (default 443).
+- **Certificate Validity**: New certificate must be present, have a non-blank thumbprint, and not be expired (`validTo > now()`).
+- **MID Server Health**: Target server must have an associated MID Server, and its status must be `UP`.
+
+---
+
+### Automated Rollback Capability
+
+If a deployment fails during **Step 3 (Binding Update)** or **Step 4 (Verification)**:
+1. The adapter checks if the job has an `oldCertificate` with a known previous thumbprint.
+2. If available, it constructs a rollback command (`operation = Operation.ROLLBACK`) targeting the previous thumbprint.
+3. The MID Server re-attaches the old certificate to the IIS site binding, restoring web traffic availability.
+4. The adapter records an audit log entry (`AuditAction.JOB_FAILED` with outcome `ROLLED_BACK`) and returns a `DeploymentAdapterResult` with `status = ROLLED_BACK` and `rollbackExecuted = true`.
+
+---
+
+### Repeated / Idempotent Execution
+
+If the target server already has the new certificate active on the designated site and port (e.g., in repeated execution or retry scenarios), the adapter detects that the active thumbprint matches the target thumbprint. It skips unnecessary remote operations and returns:
+```json
+{
+  "status": "SKIPPED_IDEMPOTENT",
+  "idempotent": true,
+  "deployedThumbprint": "NEWTHUMBPRINT...",
+  "verifiedThumbprint": "NEWTHUMBPRINT..."
+}
+```
+
+---
+
+## 10. Common Troubleshooting
 
 | Issue | Cause | Resolution |
 |---|---|---|
@@ -1457,4 +1563,7 @@ The **MID Server Integration** connects the Certificate Deployment Manager (CDM)
 | `Connection refused: localhost:5432` | PostgreSQL is not started. | Start PostgreSQL with `docker compose up -d postgres` or `brew services start postgresql@16`. |
 | `Docker daemon is not running` (during `./mvnw test`) | Docker Desktop is not started. | Open Docker Desktop (`open -a Docker` on macOS). |
 | `MID Server returns HTTP 409 Conflict` | Duplicate task submission with same idempotency key. | Verify idempotency key generation or retrieve existing task status using `midServerClient.getJobStatus(taskId)`. |
+| `IisCertificateImportException (Exit Code 101)` | Corrupted PFX bundle or incorrect password from CyberArk. | Verify certificate vault payload integrity in CyberArk safe. |
+| `IisPermissionException (Exit Code 102)` | Insufficient permissions to modify ACLs on Windows MachineKeys. | Ensure the MID Server service account has administrative rights on target Windows host. |
+| `IisBindingUpdateException (Exit Code 103)` | SSL binding conflict or port 443 already bound to another site without SNI. | Enable SNI (`requireSni = true`) or resolve port binding collisions in IIS. |
 
