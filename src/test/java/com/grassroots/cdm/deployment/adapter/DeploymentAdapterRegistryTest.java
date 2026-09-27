@@ -63,4 +63,22 @@ class DeploymentAdapterRegistryTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("No deployment adapter registered");
     }
+
+    @Test
+    @DisplayName("Registry resolves Apache and Nginx adapters")
+    void testRegistryResolvesApacheAndNginx() {
+        DeploymentAdapter apacheAdapter = mock(DeploymentAdapter.class);
+        when(apacheAdapter.getSupportedTechnology()).thenReturn(ServerTechnology.APACHE);
+        when(apacheAdapter.getSupportedTargetType()).thenReturn(TargetType.LINUX_APACHE);
+
+        DeploymentAdapter nginxAdapter = mock(DeploymentAdapter.class);
+        when(nginxAdapter.getSupportedTechnology()).thenReturn(ServerTechnology.NGINX);
+        when(nginxAdapter.getSupportedTargetType()).thenReturn(TargetType.LINUX_NGINX);
+
+        DeploymentAdapterRegistry registry = new DeploymentAdapterRegistry(List.of(apacheAdapter, nginxAdapter));
+
+        assertThat(registry.getAdapter(ServerTechnology.APACHE)).contains(apacheAdapter);
+        assertThat(registry.getAdapter(ServerTechnology.NGINX)).contains(nginxAdapter);
+        assertThat(registry.getAdapter(ServerTechnology.IIS)).isEmpty();
+    }
 }

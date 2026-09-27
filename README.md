@@ -1269,8 +1269,12 @@ Expected output:
 [INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.deployment.adapter.iis.IisDeploymentAdapterTest
 [INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.adapter.linux.ApacheDeploymentAdapterTest
+[INFO] Tests run: 17, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.adapter.linux.NginxDeploymentAdapterTest
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.deployment.adapter.DeploymentAdapterRegistryTest
-[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
@@ -1283,7 +1287,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 130, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 163, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
@@ -1554,7 +1558,135 @@ If the target server already has the new certificate active on the designated si
 
 ---
 
-## 10. Common Troubleshooting
+---
+
+## 10. Linux Certificate Deployment Adapters (Apache & Nginx)
+
+The **Linux Deployment Adapters** provide certified, non-disruptive certificate lifecycle orchestration for Linux web and reverse proxy servers.
+
+### Architecture Overview
+
+```
+DeploymentAdapter
+      ├── ApacheDeploymentAdapter  (Apache HTTP Server on Ubuntu/Debian & RHEL/CentOS)
+      └── NginxDeploymentAdapter   (Nginx HTTP & Reverse Proxy on Ubuntu/Debian & RHEL/CentOS)
+```
+
+Direct Linux target host execution is strictly delegated to the **ServiceNow MID Server boundary**. The CDM application never executes arbitrary local or remote shell commands; all actions are generated from validated configuration parameters and encapsulated in structured [`LinuxDeploymentCommand`](src/main/java/com/grassroots/cdm/deployment/adapter/linux/model/LinuxDeploymentCommand.java) records.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        CDM Core Platform                               │
+│  - AbstractLinuxDeploymentAdapter                                      │
+│  - ApacheDeploymentAdapter & NginxDeploymentAdapter                    │
+│  - Pre-Deployment Security Validation & Path Verification              │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ Structured LinuxDeploymentCommand via MidServerClient
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     ServiceNow MID Server Node                         │
+│  - Safe Execution Boundary (No ad-hoc user commands)                   │
+│  - Executes 8 Certified Steps via Secure Shell / Agent Runner          │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ Local Linux POSIX & Service Management
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     Linux Target Host (Apache / Nginx)                 │
+│  1. Transfer Certificate (/etc/ssl/certs/..., mode 0644)              │
+│  2. Transfer Private Key (/etc/ssl/private/..., mode 0640/0600)       │
+│  3. Apply Restrictive POSIX Permissions (root:ssl-cert / www-data)    │
+│  4. Validate Syntax (apache2ctl configtest / httpd -t / nginx -t)     │
+│  5. Update Web Server Directives (.conf updated, .cdm-bak created)    │
+│  6. Gracefully Reload Service (systemctl reload apache2/httpd/nginx)   │
+│  7. Verify Live Endpoint (TLS handshake on port 443 matches target)   │
+│  8. Return Structured Result & Record Audit Trail                     │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### The 8 Conceptual Deployment Steps
+
+```
+[1. TRANSFER CERT] ──► [2. TRANSFER KEY] ──► [3. RESTRICT PERMS] ──► [4. VALIDATE CONFIG] ──► [5. UPDATE DIRECTIVES] ──► [6. RELOAD SERVICE] ──► [7. VERIFY TLS PROBE]
+         │                    │                     │                       │                         │                       │                      │
+     (Failure)            (Failure)             (Failure)               (Failure)                 (Failure)               (Failure)              (Failure)
+         │                    │                     │                       │                         │                       │                      │
+         ▼                    ▼                     ▼                       ▼                         ▼                       ▼                      ▼
+  Fail immediately     Fail immediately      Fail immediately        Fail immediately          Trigger Rollback        Trigger Rollback       Trigger Rollback
+  (Config untouched)   (Config untouched)    (Config untouched)      (Config untouched)        to Backup Config        to Backup Config       to Backup Config
+```
+
+1. **Step 1: Transfer Certificate Securely**:
+   - Certificate transferred to `/etc/ssl/certs/{commonName}.crt` (Apache) or `/etc/ssl/certs/{commonName}.bundle.crt` (Nginx bundle/fullchain).
+   - Mode set to `0644` with owner `root:root`.
+   - Failure: Throws `LinuxCertificateTransferException` (Exit Code 201). Active configuration is untouched.
+2. **Step 2: Transfer Private Key Securely**:
+   - Retrieved securely from enterprise vault (`cyberark://...`) directly into `/etc/ssl/private/{commonName}.key`.
+   - **Zero Key Exposure in Logs**: Private key contents and credentials are never exposed in log streams, exceptions, or JSON metadata.
+   - Failure: Throws `LinuxPrivateKeyTransferException` (Exit Code 202). Active configuration is untouched.
+3. **Step 3: Apply Restrictive POSIX Permissions**:
+   - Restrictive mode enforced: `0600` (root:root) or `0640` (root:ssl-cert, root:www-data, root:apache, root:nginx).
+   - World-readable or world-writable modes (e.g. `0666`, `0777`, `0644` for keys) are rejected at the validation layer.
+   - Failure: Throws `LinuxPermissionException` (Exit Code 203). Active configuration is untouched.
+4. **Step 4: Validate Configuration Syntax**:
+   - Executes syntax check before touching running services:
+     - Apache on Ubuntu/Debian: `/usr/sbin/apache2ctl configtest`
+     - Apache on RHEL/CentOS: `/usr/sbin/httpd -t`
+     - Nginx on all platforms: `/usr/sbin/nginx -t`
+   - Failure: Throws `LinuxConfigurationValidationException` (Exit Code 204). Deployment aborts safely without web service disruption.
+5. **Step 5: Update Certificate Configuration Directives**:
+   - Atomically updates target virtual host / server block configuration:
+     - Apache: updates `SSLCertificateFile` and `SSLCertificateKeyFile`.
+     - Nginx: updates `ssl_certificate` and `ssl_certificate_key`.
+   - Creates a local backup (`{configPath}.cdm-bak`) to guarantee rollback capability.
+   - Failure: Throws `LinuxConfigurationUpdateException` (Exit Code 205). Triggers automated rollback.
+6. **Step 6: Gracefully Reload Service**:
+   - Graceful reload without dropping active client connections:
+     - Apache: `/bin/systemctl reload apache2` or `/bin/systemctl reload httpd`
+     - Nginx: `/bin/systemctl reload nginx`
+   - Failure: Throws `LinuxServiceReloadException` (Exit Code 206). Triggers automated rollback.
+7. **Step 7: Verify Live Endpoint (TLS Probe)**:
+   - Connects to `https://{hostname}:{port}` and verifies the negotiated SSL/TLS leaf certificate thumbprint matches the target certificate thumbprint.
+   - Failure: Throws `LinuxVerificationException` (Exit Code 207). Triggers automated rollback.
+8. **Step 8: Structured Result & Audit Reporting**:
+   - Compiles full `DeploymentAdapterResult` containing sub-step durations, exit codes, and timestamps.
+   - Sets `CertificateInstallation` status to `INSTALLED`, sets `lastVerifiedAt = Instant.now()`, and records `AuditEvent` `LIVE_ENDPOINT_VERIFIED`.
+
+---
+
+### Security Boundaries & Command Injection Defense
+
+| Security Invariant | Implementation Mechanism |
+|---|---|
+| **Zero Private Key Exposure** | Private keys are referenced exclusively via vault URIs (`cyberark://...`). Key contents are never logged, serialized into JSON parameter dumps, or included in exception messages. |
+| **No Arbitrary Command Execution** | Commands are strictly generated by internal adapter logic (`getConfigValidationCommand`, `getServiceReloadCommand`). Arbitrary shell strings from user input or job properties are never executed. |
+| **Path Traversal Defense** | All file paths are validated against `^/[a-zA-Z0-9_./\-]+$` and checked to strictly prohibit `..` (directory traversal). |
+| **Enforced Restrictive Permissions** | Validated via `LinuxFilePermissions`. Private keys must strictly be `0600` or `0640`; any insecure permission is rejected prior to dispatch. |
+
+---
+
+### Automated Rollback Capability
+
+If a failure occurs during **Step 5 (Config Update)**, **Step 6 (Service Reload)**, or **Step 7 (Verification)**:
+1. The adapter checks if a configuration backup exists (`{configPath}.cdm-bak`).
+2. It dispatches a rollback job to the MID Server (`operation = Operation.ROLLBACK`).
+3. The MID Server restores the configuration backup, runs syntax testing (`apache2ctl configtest` / `nginx -t`), and reloads the service.
+4. An audit log is recorded (`AuditAction.JOB_FAILED` with outcome `ROLLED_BACK`).
+5. A `DeploymentAdapterResult` is returned with `status = ROLLED_BACK` and `rollbackExecuted = true`.
+
+---
+
+### Repeated / Idempotent Deployment
+
+If the target server already has the new certificate active (verified by `CertificateInstallation` state and thumbprint match):
+- The adapter skips remote execution completely.
+- Avoids unnecessary file writes, reloads, or TLS disruption.
+- Returns `DeploymentAdapterResult` with status `SKIPPED_IDEMPOTENT` and `idempotent = true`.
+
+---
+
+## 11. Common Troubleshooting
 
 | Issue | Cause | Resolution |
 |---|---|---|
@@ -1566,4 +1698,12 @@ If the target server already has the new certificate active on the designated si
 | `IisCertificateImportException (Exit Code 101)` | Corrupted PFX bundle or incorrect password from CyberArk. | Verify certificate vault payload integrity in CyberArk safe. |
 | `IisPermissionException (Exit Code 102)` | Insufficient permissions to modify ACLs on Windows MachineKeys. | Ensure the MID Server service account has administrative rights on target Windows host. |
 | `IisBindingUpdateException (Exit Code 103)` | SSL binding conflict or port 443 already bound to another site without SNI. | Enable SNI (`requireSni = true`) or resolve port binding collisions in IIS. |
+| `LinuxCertificateTransferException (Exit Code 201)` | Target disk full, network partition, or target filesystem read-only. | Verify target disk space and SSH transport connectivity from MID Server. |
+| `LinuxPrivateKeyTransferException (Exit Code 202)` | Vault secret reference not found or vault access token expired. | Verify CyberArk / Vault account object locator and credentials. |
+| `LinuxPermissionException (Exit Code 203)` | Target user/group does not exist (e.g. `ssl-cert`, `apache`, `nginx`) or filesystem does not support POSIX ACLs. | Ensure target service user/group exists or adjust group mapping in target configuration. |
+| `LinuxConfigurationValidationException (Exit Code 204)` | Syntax error detected by `apache2ctl -t`, `httpd -t`, or `nginx -t`. | Inspect stderr output in `LinuxConfigurationValidationException.getOutputDetails()` for syntax errors. |
+| `LinuxServiceReloadException (Exit Code 206)` | `systemctl reload` exited non-zero. | Check `journalctl -u apache2` or `journalctl -u nginx` on the target host. Rollback automatically restores backup config. |
+| `LinuxVerificationException (Exit Code 207)` | Handshake returned old certificate thumbprint or connection was refused on port 443. | Verify virtual host SNI configuration and firewall rules on port 443. Rollback automatically restores backup config. |
+| `LinuxRollbackException` | Failed to restore configuration backup or syntax test failed on backup config. | Manual intervention required: inspect `{configPath}.cdm-bak` and reload service manually. |
+
 
