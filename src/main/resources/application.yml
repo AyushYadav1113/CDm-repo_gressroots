@@ -100,6 +100,15 @@ cdm:
     reject-expired-candidates: ${MATCHING_REJECT_EXPIRED:true}
     require-validity-extension: ${MATCHING_REQUIRE_EXTENSION:true}
     allow-wildcard-expansion: ${MATCHING_ALLOW_WILDCARD:true}
+  deployment:
+    planner:
+      enabled: ${DEPLOYMENT_PLANNER_ENABLED:true}
+      default-max-retries: ${DEPLOYMENT_MAX_RETRIES:3}
+      critical-threshold-days: ${DEPLOYMENT_CRITICAL_THRESHOLD_DAYS:7}
+      high-threshold-days: ${DEPLOYMENT_HIGH_THRESHOLD_DAYS:15}
+      allow-manual-review-override: ${DEPLOYMENT_ALLOW_REVIEW_OVERRIDE:false}
+      require-active-mid-server: ${DEPLOYMENT_REQUIRE_ACTIVE_MID:true}
+      default-port: ${DEPLOYMENT_DEFAULT_PORT:443}
 
 logging:
   pattern:

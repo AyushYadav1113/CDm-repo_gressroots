@@ -2,6 +2,7 @@ package com.grassroots.cdm.entity;
 
 import com.grassroots.cdm.deployment.DeploymentJobStatus;
 import com.grassroots.cdm.entity.enums.DeploymentType;
+import com.grassroots.cdm.entity.enums.JobPriority;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -58,6 +59,13 @@ public class DeploymentJob extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 50)
     private DeploymentJobStatus status = DeploymentJobStatus.PENDING;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "priority", length = 50)
+    private JobPriority priority = JobPriority.NORMAL;
+
+    @Column(name = "creation_reason", columnDefinition = "TEXT")
+    private String creationReason;
 
     @Column(name = "attempt_count", nullable = false)
     private int attemptCount = 0;
@@ -276,5 +284,21 @@ public class DeploymentJob extends BaseEntity {
 
     public void setCompletedAt(Instant completedAt) {
         this.completedAt = completedAt;
+    }
+
+    public JobPriority getPriority() {
+        return priority;
+    }
+
+    public void setPriority(JobPriority priority) {
+        this.priority = priority;
+    }
+
+    public String getCreationReason() {
+        return creationReason;
+    }
+
+    public void setCreationReason(String creationReason) {
+        this.creationReason = creationReason;
     }
 }

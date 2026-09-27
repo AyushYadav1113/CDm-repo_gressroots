@@ -765,6 +765,113 @@ The matching engine is validated by **15 dedicated tests** covering all operatio
 
 ---
 
+## Deployment Planner
+
+The **Deployment Planner** bridges the gap between certificate correlation and deployment orchestration. After the Matching Engine identifies:
+```text
+OLD CERTIFICATE → NEW CERTIFICATE
+```
+the Deployment Planner determines where the old certificate is actively installed across infrastructure and creates deterministic `DeploymentJob` records for the target servers and runtime technologies.
+
+### 1. Orchestration Architecture & Flow
+
+```text
+CertificateReplacement
+        ↓
+CertificateInstallation
+        ↓
+Target Server (existence & status validated)
+        ↓
+MID Server (operational suitability validated)
+        ↓
+Technology & Deployment Type Resolution (IIS, Apache, Nginx, Java)
+        ↓
+Deterministic Idempotency Key & Job Reference Generation
+        ↓
+Priority Calculation (Urgency & Environment tier)
+        ↓
+DeploymentJob (PERSISTED as PENDING with creation reason & audit log)
+```
+
+### 2. Supported Initial Technologies & Mapping Rules
+
+The planner maps target server and installation technologies into specific deployment types:
+
+| Target Technology | Operating System | Deployment Type | Target Type String | Generic TargetType |
+|---|---|---|---|---|
+| **IIS** | Windows Server | `DeploymentType.IIS` | `IIS` | `TargetType.WINDOWS_IIS` |
+| **Apache** | Linux (RHEL, Ubuntu, CentOS) | `DeploymentType.APACHE` | `APACHE` | `TargetType.LINUX_APACHE` |
+| **Nginx** | Linux (Ubuntu, Debian, RHEL) | `DeploymentType.NGINX` | `NGINX` | `TargetType.LINUX_NGINX` |
+| **Java Keystore** / **Tomcat** / **WebLogic** / **WebSphere** | Linux / Windows | `DeploymentType.JAVA` | `JAVA` | `TargetType.JAVA_KEYSTORE` |
+
+If a target server or installation specifies an unrecognized or null technology, the planner throws `UnsupportedTechnologyException` and records a plan rejection.
+
+### 3. Validation Rules & Guardrails
+
+1. **NO_MATCH Prevention**:
+   - `CertificateReplacement` records that are null, `REJECTED`, or `SUPERSEDED` throw `NoMatchException`. No jobs are created.
+2. **Ambiguity Prevention (`REVIEW_REQUIRED`)**:
+   - Replacements in `MatchStatus.PENDING_REVIEW` (`REVIEW_REQUIRED`) throw `AmbiguousMatchException`. Automated deployments are strictly prevented without manual human approval.
+3. **Target Server Existence**:
+   - The installation's target server must exist and not be `DECOMMISSIONED`. Decommissioned or missing servers throw `MissingServerException`.
+4. **MID Server Suitability**:
+   - Every target server must have an assigned MID Server, and the MID Server must be operational (`MidServerStatus.UP`). Missing or down MID Servers throw `MissingMidServerException`.
+5. **Idempotency & Duplicate Prevention**:
+   - Every planned deployment generates a deterministic idempotency key combining `oldCertificateId`, `newCertificateId`, `installationId`, `serverHostname`, `port`, and `bindingInfo`.
+   - If an active or pending job exists with the same idempotency key, `DuplicateDeploymentJobException` is thrown.
+   - If a job for the installation and certificate has already reached `COMPLETED` status, `DeploymentAlreadyCompletedException` is thrown.
+
+### 4. Deterministic Job Priority Rules
+
+Priority is calculated deterministically based on certificate expiration urgency and environment tier:
+
+| Condition | Priority | Rationale |
+|---|---|---|
+| Expiration within `critical-threshold-days` (default `<= 7 days`) or expired | `JobPriority.CRITICAL` | Immediate outage risk |
+| Expiration within `high-threshold-days` (default `<= 15 days`) | `JobPriority.HIGH` | Escalated renewal window |
+| Standard renewal in `PRODUCTION` or `DISASTER_RECOVERY` | `JobPriority.HIGH` | Production uptime guarantee |
+| Standard renewal in `STAGING` | `JobPriority.NORMAL` | Pre-production testing |
+| Standard renewal in `DEVELOPMENT` or `QA` | `JobPriority.LOW` | Non-critical environment |
+
+### 5. Configurable Properties (`application.yml`)
+
+```yaml
+cdm:
+  deployment:
+    planner:
+      enabled: ${DEPLOYMENT_PLANNER_ENABLED:true}
+      default-max-retries: ${DEPLOYMENT_MAX_RETRIES:3}
+      critical-threshold-days: ${DEPLOYMENT_CRITICAL_THRESHOLD_DAYS:7}
+      high-threshold-days: ${DEPLOYMENT_HIGH_THRESHOLD_DAYS:15}
+      allow-manual-review-override: ${DEPLOYMENT_ALLOW_REVIEW_OVERRIDE:false}
+      require-active-mid-server: ${DEPLOYMENT_REQUIRE_ACTIVE_MID:true}
+      default-port: ${DEPLOYMENT_DEFAULT_PORT:443}
+```
+
+### 6. Test Suite Coverage
+
+The Deployment Planner is validated across **15 unit and integration tests** (100% pass rate):
+
+| # | Test Scenario | Test Class | Validated Behavior |
+|---|---|---|---|
+| 1 | **IIS Deployment** | `DeploymentPlannerUnitTest` | Creates job with `DeploymentType.IIS`, `targetType="IIS"`, and status `PENDING`. |
+| 2 | **Apache Deployment** | `DeploymentPlannerUnitTest` | Creates job with `DeploymentType.APACHE`, `targetType="APACHE"`. |
+| 3 | **Nginx Deployment** | `DeploymentPlannerUnitTest` | Creates job with `DeploymentType.NGINX`, port `8443`, priority `CRITICAL`. |
+| 4 | **Java Deployment** | `DeploymentPlannerUnitTest` | Creates job with `DeploymentType.JAVA`, `targetType="JAVA"`. |
+| 5 | **Missing Server** | `DeploymentPlannerUnitTest` | Throws `MissingServerException` when server is null or `DECOMMISSIONED`. |
+| 6 | **Missing MID Server** | `DeploymentPlannerUnitTest` | Throws `MissingMidServerException` when MID server is null or `DOWN`. |
+| 7 | **Duplicate Job** | `DeploymentPlannerUnitTest` | Throws `DuplicateDeploymentJobException` when identical idempotency key exists. |
+| 8 | **Ambiguous Match** | `DeploymentPlannerUnitTest` | Throws `AmbiguousMatchException` for `PENDING_REVIEW` replacements. |
+| 9 | **Completed Deployment** | `DeploymentPlannerUnitTest` | Throws `DeploymentAlreadyCompletedException` when job is already `COMPLETED`. |
+| 10 | **Unsupported Technology** | `DeploymentPlannerUnitTest` | Throws `UnsupportedTechnologyException` for null or unknown technologies. |
+| 11 | **NO_MATCH Prevention** | `DeploymentPlannerUnitTest` | Throws `NoMatchException` for null, `REJECTED`, or `SUPERSEDED` replacements. |
+| 12 | **Multi-Installation** | `DeploymentPlannerUnitTest` | Aggregates successful jobs and rejections across multiple installations. |
+| 13 | **Idempotency Repeatability**| `DeploymentPlannerUnitTest` | Generates identical keys for identical inputs; diff keys for different ports. |
+| 14 | **PostgreSQL Persistence** | `DeploymentPlannerIntegrationTest` | Persists job in PostgreSQL, verifies Flyway V3, and logs `DEPLOYMENT_JOB_CREATED`. |
+| 15 | **Ambiguity Integration** | `DeploymentPlannerIntegrationTest` | Rejects automated planning for ambiguous replacements in database. |
+
+---
+
 ## Running the Codebase Locally
 
 ### 1. Prerequisites
@@ -1007,8 +1114,20 @@ Expected output:
 [INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.integration.servicenow.ServiceNowClientWireMockTest
 [INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.integration.sectigo.client.SectigoClientWireMockTest
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.discovery.DiscoveryServiceIntegrationTest
 [INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.integration.sectigo.service.SectigoIntegrationServiceTest
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.matching.CertificateMatcherUnitTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.matching.CertificateMatchingServiceIntegrationTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.planner.DeploymentPlannerUnitTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.grassroots.cdm.deployment.planner.DeploymentPlannerIntegrationTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.repository.DatabaseMigrationAndRepositoryIntegrationTest
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
 [INFO] Running com.grassroots.cdm.controller.SystemControllerTest
@@ -1021,7 +1140,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 38, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 83, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 

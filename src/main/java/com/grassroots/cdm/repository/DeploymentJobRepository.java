@@ -33,5 +33,11 @@ public interface DeploymentJobRepository extends JpaRepository<DeploymentJob, UU
 
     List<DeploymentJob> findByDeploymentType(DeploymentType deploymentType);
 
+    List<DeploymentJob> findByInstallationId(UUID installationId);
+
+    List<DeploymentJob> findByOldCertificateId(UUID oldCertificateId);
+
+    Optional<DeploymentJob> findByInstallationIdAndNewCertificateId(UUID installationId, UUID newCertificateId);
+
     boolean existsByIdempotencyKey(String idempotencyKey);
 }
