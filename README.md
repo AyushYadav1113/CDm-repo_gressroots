@@ -42,6 +42,26 @@ com.grassroots.cdm
 │   └── SecurityConfig.java              # Spring Security filter chain & RBAC
 ├── controller                           # REST API controllers (DTO boundaries)
 │   └── SystemController.java            # Diagnostic and health inspection APIs
+├── credential                           # Credential-management abstraction & CyberArk CCP integration
+│   ├── CredentialProvider.java          # Core credential provider contract
+│   ├── CredentialAction.java            # Scoped execution functional callback
+│   ├── cyberark/
+│   │   ├── CyberArkClient.java          # Low-level CCP REST client contract
+│   │   ├── DefaultCyberArkClient.java   # Spring 6 RestClient production client
+│   │   ├── CyberArkCredentialProvider.java # Production CyberArk provider & vault adapter
+│   │   └── CyberArkProperties.java      # Configuration properties (cdm.cyberark)
+│   ├── dto/
+│   │   ├── CredentialRequest.java       # Structured retrieval request
+│   │   └── CyberArkAccountResponse.java # CCP JSON DTO with memory wiping
+│   ├── exception/                       # Explicit credential exception hierarchy
+│   │   ├── CredentialException.java
+│   │   ├── CyberArkUnavailableException.java
+│   │   ├── CyberArkUnauthorizedException.java
+│   │   ├── CredentialNotFoundException.java
+│   │   ├── CredentialExpiredException.java
+│   │   └── CredentialRotationInProgressException.java
+│   └── mock/
+│       └── MockCredentialProvider.java  # In-memory mock for dev & testing with failure simulations
 ├── deployment                           # Deployment orchestration domain
 │   ├── DeploymentDispatcher.java        # MID Server dispatch orchestrator contract
 │   ├── DeploymentInstruction.java       # Parameterized MID server payload specification
@@ -1301,7 +1321,7 @@ Expected output:
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] Results:
-[INFO] Tests run: 207, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 231, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
@@ -1931,7 +1951,96 @@ Testing uses real in-memory HTTPS servers (`com.sun.net.httpserver.HttpsServer`)
 
 ---
 
-## 13. Common Troubleshooting
+## 13. Credential Management & CyberArk Integration
+
+The **Credential Management** subsystem provides an enterprise vault abstraction that integrates with **CyberArk Central Credential Provider (CCP)** / AIM to acquire target server credentials just-in-time (JIT).
+
+### Architecture
+
+```mermaid
+flowchart TD
+    A[Deployment Workflow] -->|JIT Credential Request| B[CredentialProvider]
+    B --> C[CyberArkCredentialProvider]
+    C -->|REST over TLS + AppID| D[CyberArk Central Credential Provider CCP]
+    D -->|Encrypted Response / JSON| C
+    C -->|AutoCloseable CredentialSecret| B
+    B -->|Transient Memory Only| E[MID Server / Deployment Adapter]
+    E -->|wipe / close| F[Immediate Memory Zeroing]
+    C -->|Audit Event Without Secrets| G[Audit Trail PostgreSQL]
+```
+
+### Security Boundaries & Invariants
+
+The CDM platform enforces zero permanent storage of target-server passwords:
+
+| Security Invariant | Enforcement Mechanism |
+|---|---|
+| **Zero Database Persistence** | PostgreSQL never stores passwords or private keys. Managed servers and installations store only canonical secret locators (`cyberark://Safe/Account`). |
+| **No Passwords in Git** | No credentials or secrets exist in source code or version control. Configuration uses externalized environment variables (`${CYBERARK_CCP_URL}`, `${CYBERARK_APP_ID}`). |
+| **Zero Log Exposure** | `CredentialSecret.toString()`, `CyberArkAccountResponse.toString()`, and `CyberArkProperties.toString()` strictly mask secrets with `[REDACTED]`. HTTP response logs sanitize credential bodies. |
+| **Minimum In-Memory Residence** | `CredentialSecret` implements `AutoCloseable`. The `executeWithCredential` pattern and `wipe()` zero password character arrays (`Arrays.fill(..., '\0')`) immediately after use. |
+| **No API Exposure** | No REST API controller or endpoint ever exposes `CredentialSecret` or password fields. Only metadata (safe name, account name, last retrieved timestamp) is exposed. |
+| **Mandatory TLS** | All communication with CyberArk Central Credential Provider is enforced over TLS 1.2+ with configurable connection and read timeouts. |
+| **Audit Without Secrets** | Every credential retrieval is logged to the immutable audit trail (`AuditAction.CREDENTIAL_RETRIEVED`) recording safe, account, target host, and outcome—never the credential payload itself. |
+
+---
+
+### Production Configuration Guide
+
+In production environments, target server passwords and private key passphrases must **never** be passed through environment variables or configuration files. They are managed centrally in CyberArk Enterprise Vault and fetched on-demand via the Central Credential Provider (CCP).
+
+#### Production Environment Variables
+| Variable | Description | Example Production Value |
+|---|---|---|
+| `CYBERARK_CCP_URL` | Base URL of CyberArk CCP AIMWebService | `https://cyberark-ccp.corp.internal/AIMWebService` |
+| `CYBERARK_APP_ID` | Application ID provisioned in CyberArk Vault | `CDM_ORCHESTRATOR_PROD` |
+| `CYBERARK_SAFE` | Default safe for target server deployment accounts | `CDM_MANAGED_SERVERS_SAFE` |
+| `CYBERARK_CONNECT_TIMEOUT_MS` | TCP connection timeout in milliseconds | `5000` |
+| `CYBERARK_READ_TIMEOUT_MS` | HTTP read timeout in milliseconds | `10000` |
+| `CYBERARK_MAX_RETRIES` | Max retries for transient 5xx or network errors | `3` |
+| `CYBERARK_RETRY_BACKOFF_MS` | Exponential backoff delay between retries | `1000` |
+| `CYBERARK_MOCK_ENABLED` | Set to `false` in production (enables real HTTP client) | `false` |
+
+#### Canonical Secret Locators
+Target servers and certificate installation records reference credentials via canonical URI locators:
+```
+cyberark://{SafeName}/Account/{AccountName}
+cyberark://{SafeName}/{AccountName}
+```
+*Example*: `cyberark://CDM_PROD_SAFE/Account/svc_cdm_iis_web01`
+
+---
+
+### Exception Handling & Failure Scenarios
+
+The integration defines an explicit exception hierarchy extending `CredentialException`:
+
+| Failure Mode | Exception | HTTP / Trigger Condition | CDM Response |
+|---|---|---|---|
+| **Unavailable / Timeout** | `CyberArkUnavailableException` | Connection refused, socket timeout, HTTP 500/502/503 | Retries up to configured max retries; transitions job to `RETRY_PENDING` or `FAILED`. |
+| **Unauthorized Access** | `CyberArkUnauthorizedException` | HTTP 401 or 403, `APPAP133E` (AppID unauthorized) | Aborts execution; records audit failure; notifies operator of vault permission denial. |
+| **Missing Credential** | `CredentialNotFoundException` | HTTP 404, `APPAP002E` (Object does not exist) | Aborts execution; transitions job to `FAILED` with diagnostic message indicating missing vault object. |
+| **Password Rotation** | `CredentialRotationInProgressException` | `PasswordChangeInProcess: true` or HTTP 409 (`APPAP314E`) | Defers deployment execution; triggers retry with backoff to allow CPM rotation to finish. |
+| **Expired Credential** | `CredentialExpiredException` | `IsExpired: true` or CPM expiration policy violation | Fails deployment pre-flight; flags credential expiration to security administrators. |
+
+---
+
+### Testing & Local Development (`MockCredentialProvider`)
+
+For local development and automated testing without access to a corporate CyberArk vault:
+- Set `CYBERARK_MOCK_ENABLED=true` in `.env` or `application-local.yml`.
+- Spring Boot automatically activates `MockCredentialProvider` instead of `CyberArkCredentialProvider`.
+- `MockCredentialProvider` provides pre-populated test credentials for all standard service accounts (`svc_cdm_deployer`, `svc_cdm_iis`, `svc_cdm_apache`, `svc_cdm_nginx`, `svc_cdm_java_keystore`).
+- Supports simulating vault failure modes on-demand:
+  - `provider.setSimulateUnavailable(true)`
+  - `provider.setSimulateUnauthorized(true)`
+  - `provider.setSimulateNotFound(true)`
+  - `provider.setSimulateRotation(true)`
+  - `provider.setSimulateExpired(true)`
+
+---
+
+## 14. Common Troubleshooting
 
 | Issue | Cause | Resolution |
 |---|---|---|
@@ -1940,6 +2049,10 @@ Testing uses real in-memory HTTPS servers (`com.sun.net.httpserver.HttpsServer`)
 | `Connection refused: localhost:5432` | PostgreSQL is not started. | Start PostgreSQL with `docker compose up -d postgres` or `brew services start postgresql@16`. |
 | `Docker daemon is not running` (during `./mvnw test`) | Docker Desktop is not started. | Open Docker Desktop (`open -a Docker` on macOS). |
 | `MID Server returns HTTP 409 Conflict` | Duplicate task submission with same idempotency key. | Verify idempotency key generation or retrieve existing task status using `midServerClient.getJobStatus(taskId)`. |
+| `CyberArkUnauthorizedException (HTTP 403)` | AppID is not authorized in CyberArk safe or client IP not whitelisted. | Verify AppID in CyberArk Enterprise Vault and grant Retrieve/List permissions on the designated Safe. |
+| `CredentialNotFoundException (HTTP 404)` | Account object name does not exist in CyberArk safe. | Verify safe name and object name match the locator (`cyberark://Safe/Account`). |
+| `CredentialRotationInProgressException (HTTP 409)` | CyberArk Central Policy Manager (CPM) is actively rotating the password. | Wait for password change to complete or adjust retry backoff settings. |
+| `CyberArkUnavailableException` | CyberArk CCP service is offline or network firewall blocked connection. | Verify CCP endpoint URL and firewall access between CDM orchestrator and CCP server. |
 | `VerificationStatus.CERTIFICATE_MISMATCH` | Active certificate on endpoint does not match expected thumbprint or serial. | Verify deployment reload step succeeded and that IIS/Apache/Nginx/Java bound the new certificate. |
 | `VerificationStatus.FAILED (Hostname mismatch)` | Certificate CN or SANs do not match the target endpoint host. | Check certificate Subject Alternative Names and ensure endpoint URL matches one of the SANs or wildcard patterns. |
 | `VerificationStatus.FAILED (Expired)` | Certificate presented by target endpoint is past its `valid_to` date. | Check target server time and ensure the renewed certificate was deployed rather than the expiring certificate. |
@@ -1961,6 +2074,7 @@ Testing uses real in-memory HTTPS servers (`com.sun.net.httpserver.HttpsServer`)
 | `ApplicationRestartException (Exit Code 304)` | Java application failed to restart under specified `RestartStrategy`. | Inspect `journalctl -u {serviceName}` or application log file; rollback automatically restores backup keystore. |
 | `JavaEndpointVerificationException (Exit Code 305)` | TLS handshake probe on port 8443 returned previous certificate thumbprint or connection was refused. | Verify port binding, firewall rules, and virtual host configuration. Rollback automatically restores backup keystore. |
 | `JavaRollbackException` | Failed to restore `{keystoreLocation}.cdm-bak` or restart previous configuration. | Manual intervention required: inspect backup keystore file and restart application service manually. |
+
 
 
 

@@ -25,6 +25,8 @@ cdm:
     mock-enabled: ${SECTIGO_MOCK_ENABLED:true}
   midserver:
     mock-enabled: ${MID_SERVER_MOCK_ENABLED:true}
+  cyberark:
+    mock-enabled: ${CYBERARK_MOCK_ENABLED:true}
 
 logging:
   level:

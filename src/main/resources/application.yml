@@ -124,6 +124,16 @@ cdm:
     mock-enabled: ${MID_SERVER_MOCK_ENABLED:false}
     jobs-path: ${MID_SERVER_JOBS_PATH:/api/v1/mid/jobs}
     execution-timeout-seconds: ${MID_SERVER_EXECUTION_TIMEOUT_SECONDS:300}
+  cyberark:
+    enabled: ${CYBERARK_ENABLED:true}
+    base-url: ${CYBERARK_CCP_URL:https://cyberark.grassroots.internal/AIMWebService}
+    app-id: ${CYBERARK_APP_ID:CDM_ORCHESTRATOR}
+    default-safe: ${CYBERARK_SAFE:CDM_PROD_SAFE}
+    connect-timeout-ms: ${CYBERARK_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${CYBERARK_READ_TIMEOUT_MS:10000}
+    max-retries: ${CYBERARK_MAX_RETRIES:3}
+    retry-backoff-ms: ${CYBERARK_RETRY_BACKOFF_MS:1000}
+    mock-enabled: ${CYBERARK_MOCK_ENABLED:false}
 
 logging:
   pattern:
