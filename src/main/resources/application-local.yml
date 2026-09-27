@@ -27,6 +27,13 @@ cdm:
     mock-enabled: ${MID_SERVER_MOCK_ENABLED:true}
   cyberark:
     mock-enabled: ${CYBERARK_MOCK_ENABLED:true}
+  orchestration:
+    scheduling-enabled: ${CDM_SCHEDULING_ENABLED:false}
+
+management:
+  endpoint:
+    health:
+      show-details: always
 
 logging:
   level:

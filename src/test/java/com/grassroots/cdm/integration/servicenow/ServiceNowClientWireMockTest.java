@@ -39,6 +39,7 @@ class ServiceNowClientWireMockTest {
         wireMockServer = new WireMockServer(WireMockConfiguration.wireMockConfig().dynamicPort());
         wireMockServer.start();
         WireMock.configureFor("localhost", wireMockServer.port());
+        wireMockServer.resetAll();
 
         properties = new ServiceNowProperties();
         properties.setBaseUrl("http://localhost:" + wireMockServer.port());
@@ -56,6 +57,8 @@ class ServiceNowClientWireMockTest {
     @AfterEach
     void tearDown() {
         if (wireMockServer != null && wireMockServer.isRunning()) {
+            wireMockServer.resetAll();
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
             wireMockServer.stop();
         }
     }
@@ -185,12 +188,25 @@ class ServiceNowClientWireMockTest {
     @Test
     @DisplayName("Handle HTTP Timeout")
     void fetchCertificates_timeout() {
+        // Use a dedicated client with maxRetries=1 to bound the total test duration
+        // regardless of JVM load from parallel tests in the full suite.
+        ServiceNowProperties timeoutProps = new ServiceNowProperties();
+        timeoutProps.setBaseUrl("http://localhost:" + wireMockServer.port());
+        timeoutProps.setTable("cmdb_ci_certificate");
+        timeoutProps.setUsername("cdm_user");
+        timeoutProps.setPassword("secret_token");
+        timeoutProps.setConnectTimeoutMs(500);
+        timeoutProps.setReadTimeoutMs(500);
+        timeoutProps.setMaxRetries(1);
+        timeoutProps.setBackoffMs(10);
+        ServiceNowClientImpl timeoutClient = new ServiceNowClientImpl(timeoutProps, objectMapper);
+
         wireMockServer.stubFor(get(urlPathEqualTo("/api/now/table/cmdb_ci_certificate"))
                 .willReturn(aResponse()
                         .withStatus(200)
-                        .withFixedDelay(2000))); // longer than 1000ms readTimeout
+                        .withFixedDelay(1500))); // longer than 500ms readTimeout
 
-        assertThatThrownBy(() -> client.fetchCertificates("active=true", 10, 0, "TRACE-TIMEOUT"))
+        assertThatThrownBy(() -> timeoutClient.fetchCertificates("active=true", 10, 0, "TRACE-TIMEOUT"))
                 .isInstanceOf(ServiceNowTimeoutException.class);
     }
 

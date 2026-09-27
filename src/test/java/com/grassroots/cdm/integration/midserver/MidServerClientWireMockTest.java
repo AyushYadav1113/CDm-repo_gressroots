@@ -60,6 +60,7 @@ class MidServerClientWireMockTest {
         wireMockServer = new WireMockServer(WireMockConfiguration.wireMockConfig().dynamicPort());
         wireMockServer.start();
         WireMock.configureFor("localhost", wireMockServer.port());
+        wireMockServer.resetAll(); // ensure clean stub state even if a previous test leaked
 
         properties = new MidServerProperties();
         properties.setBaseUrl("http://localhost:" + wireMockServer.port());
@@ -77,6 +78,8 @@ class MidServerClientWireMockTest {
     @AfterEach
     void tearDown() {
         if (wireMockServer != null && wireMockServer.isRunning()) {
+            wireMockServer.resetAll(); // drain any pending stubs before stopping
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
             wireMockServer.stop();
         }
     }

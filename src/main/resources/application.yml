@@ -36,16 +36,32 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,env
+        include: health,info,metrics,env,prometheus
       base-path: /actuator
   endpoint:
     health:
-      show-details: always
+      show-details: when-authorized
+      roles: ADMIN,ORCHESTRATOR
       probes:
         enabled: true
+      group:
+        liveness:
+          include: cdmDatabase
+        readiness:
+          include: cdmDatabase,serviceNow,sectigo,cyberArk,midServer
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
   info:
     env:
       enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        cdm.workflow.duration: true
+      percentiles:
+        cdm.workflow.duration: 0.5,0.95,0.99
 
 # OpenAPI Specification Configuration
 springdoc:
@@ -135,7 +151,51 @@ cdm:
     retry-backoff-ms: ${CYBERARK_RETRY_BACKOFF_MS:1000}
     mock-enabled: ${CYBERARK_MOCK_ENABLED:false}
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Operational Orchestration Scheduler Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
+  orchestration:
+    scheduling-enabled: ${CDM_SCHEDULING_ENABLED:true}
+
+    discovery:
+      enabled: ${CDM_DISCOVERY_ENABLED:true}
+      cron: ${CDM_DISCOVERY_CRON:0 0 1 * * ?}
+
+    sectigo-sync:
+      enabled: ${CDM_SECTIGO_SYNC_ENABLED:true}
+      cron: ${CDM_SECTIGO_SYNC_CRON:0 30 1 * * ?}
+
+    matching:
+      enabled: ${CDM_MATCHING_ENABLED:true}
+      cron: ${CDM_MATCHING_CRON:0 0 2 * * ?}
+
+    planning:
+      enabled: ${CDM_PLANNING_ENABLED:true}
+      cron: ${CDM_PLANNING_CRON:0 30 2 * * ?}
+
+    execution:
+      enabled: ${CDM_EXECUTION_ENABLED:true}
+      fixed-delay-ms: ${CDM_EXECUTION_DELAY_MS:60000}
+
+    retry:
+      enabled: ${CDM_RETRY_ENABLED:true}
+      fixed-delay-ms: ${CDM_RETRY_DELAY_MS:30000}
+
+    next-day-confirmation:
+      enabled: ${CDM_NEXT_DAY_ENABLED:true}
+      cron: ${CDM_NEXT_DAY_CRON:0 0 4 * * ?}
+
+    retry-policy:
+      max-attempts: ${CDM_MAX_RETRY_ATTEMPTS:3}
+      initial-interval: ${CDM_RETRY_INITIAL_INTERVAL:PT30S}
+      multiplier: ${CDM_RETRY_MULTIPLIER:2.0}
+      max-interval: ${CDM_RETRY_MAX_INTERVAL:PT1H}
+
 logging:
   pattern:
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n%wEx"
+  level:
+    com.grassroots.cdm: ${CDM_LOG_LEVEL:INFO}
+    com.grassroots.cdm.workflow.scheduler: INFO
+    com.grassroots.cdm.audit: INFO
 

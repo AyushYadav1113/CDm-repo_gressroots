@@ -1,7 +1,7 @@
 package com.grassroots.cdm.audit;
 
 /**
- * Standardized audit action types for traceability and compliance.
+ * Standardized audit action types for traceability, security compliance, and lifecycle auditing.
  */
 public enum AuditAction {
     CERTIFICATE_DISCOVERED,
@@ -10,8 +10,13 @@ public enum AuditAction {
     CREDENTIAL_RETRIEVED,
     DEPLOYMENT_JOB_CREATED,
     DEPLOYMENT_DISPATCHED,
+    DEPLOYMENT_EXECUTED,
     LIVE_ENDPOINT_VERIFIED,
+    DEPLOYMENT_COMPLETED,
     DISCOVERY_RECONCILED,
     JOB_FAILED,
-    JOB_RETRIED
+    JOB_RETRIED,
+    MANUAL_REVIEW_ESCALATED,
+    WORKFLOW_STARTED,
+    WORKFLOW_COMPLETED
 }
