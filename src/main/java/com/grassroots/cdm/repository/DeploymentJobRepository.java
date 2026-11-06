@@ -4,6 +4,7 @@ import com.grassroots.cdm.deployment.DeploymentJobStatus;
 import com.grassroots.cdm.entity.DeploymentJob;
 import com.grassroots.cdm.entity.enums.DeploymentType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
 import java.util.Collection;
@@ -15,7 +16,7 @@ import java.util.UUID;
  * Spring Data JPA repository for DeploymentJob entities.
  */
 @Repository
-public interface DeploymentJobRepository extends JpaRepository<DeploymentJob, UUID> {
+public interface DeploymentJobRepository extends JpaRepository<DeploymentJob, UUID>, JpaSpecificationExecutor<DeploymentJob> {
 
     Optional<DeploymentJob> findByJobReference(String jobReference);
 

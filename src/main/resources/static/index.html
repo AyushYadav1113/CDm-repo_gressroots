@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Certificate Deployment Manager (CDM) | Enterprise Console</title>
+  <meta name="description" content="Enterprise closed-loop SSL/TLS certificate discovery, matching, and deployment orchestration platform.">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+</head>
+<body>
+
+  <div class="app-layout">
+    
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="brand-section">
+        <div class="brand-logo-icon">🛡️</div>
+        <div class="brand-meta">
+          <span class="brand-title">CDM Console</span>
+          <span class="brand-subtitle">Orchestrator v1.0</span>
+        </div>
+      </div>
+
+      <nav class="nav-menu">
+        <div class="nav-category-label">Monitoring</div>
+        <a class="nav-item active" data-tab="dashboard" id="nav-dashboard">
+          <span class="nav-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a class="nav-item" data-tab="simulator" id="nav-simulator">
+          <span class="nav-icon">⚡</span>
+          <span>E2E Simulator</span>
+          <span class="nav-badge">Demo</span>
+        </a>
+
+        <div class="nav-category-label">Inventory & Ops</div>
+        <a class="nav-item" data-tab="certificates" id="nav-certificates">
+          <span class="nav-icon">📜</span>
+          <span>Certificates</span>
+        </a>
+        <a class="nav-item" data-tab="servers" id="nav-servers">
+          <span class="nav-icon">🖥️</span>
+          <span>Target Servers</span>
+        </a>
+        <a class="nav-item" data-tab="replacements" id="nav-replacements">
+          <span class="nav-icon">🔗</span>
+          <span>Replacements</span>
+        </a>
+        <a class="nav-item" data-tab="deployments" id="nav-deployments">
+          <span class="nav-icon">🚀</span>
+          <span>Deployments</span>
+        </a>
+        <a class="nav-item" data-tab="midservers" id="nav-midservers">
+          <span class="nav-icon">🛰️</span>
+          <span>MID Servers</span>
+        </a>
+
+        <div class="nav-category-label">Governance</div>
+        <a class="nav-item" data-tab="audit" id="nav-audit">
+          <span class="nav-icon">📋</span>
+          <span>Audit Trail</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="auth-user-card" onclick="openAuthModal()" title="Click to manage credentials">
+          <div class="user-avatar">ADM</div>
+          <div class="user-details">
+            <span class="user-name" id="current-username">cdm_admin</span>
+            <span class="user-role">ADMIN &bull; Click to Auth</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <div class="main-wrapper">
+      
+      <!-- Top Sticky Header -->
+      <header class="top-header">
+        <div class="header-left">
+          <h1 class="page-title" id="page-title">Operational Dashboard</h1>
+          <div class="status-pill" id="db-status-pill">
+            <span class="pulse-dot"></span> PostgreSQL: UP
+          </div>
+        </div>
+
+        <div class="header-right">
+          <a href="/swagger-ui/index.html" target="_blank" class="btn btn-secondary btn-sm" id="btn-swagger">
+            <span>📖 Swagger UI</span>
+          </a>
+          <a href="/v3/api-docs" target="_blank" class="btn btn-secondary btn-sm" id="btn-openapi">
+            <span>⚙️ OpenAPI JSON</span>
+          </a>
+          <button class="btn btn-primary btn-sm" onclick="refreshActiveTab()" id="btn-refresh">
+            <span>🔄 Refresh</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Viewport Body -->
+      <main class="content-body">
+
+        <!-- ================================================================
+             1. DASHBOARD VIEW
+             ================================================================ -->
+        <section class="tab-pane active" id="tab-dashboard">
+          
+          <!-- Key Metrics Grid -->
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-title">Discovered Certificates</span>
+                <div class="metric-icon-wrap indigo">📜</div>
+              </div>
+              <div class="metric-value" id="kpi-total-certs">--</div>
+              <div class="metric-footer">
+                <span class="metric-trend up">&bull; ServiceNow & Sectigo</span>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-title">Target Servers</span>
+                <div class="metric-icon-wrap green">🖥️</div>
+              </div>
+              <div class="metric-value" id="kpi-total-servers">--</div>
+              <div class="metric-footer">
+                <span>IIS, Apache, Nginx, Java</span>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-title">Deployment Jobs</span>
+                <div class="metric-icon-wrap amber">🚀</div>
+              </div>
+              <div class="metric-value" id="kpi-total-deployments">--</div>
+              <div class="metric-footer">
+                <span class="metric-trend up">&bull; Closed-Loop Pipelines</span>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-title">Active MID Nodes</span>
+                <div class="metric-icon-wrap sky">🛰️</div>
+              </div>
+              <div class="metric-value" id="kpi-total-mid">--</div>
+              <div class="metric-footer">
+                <span>Ready for Execution</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Closed Loop Flow Stepper -->
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">Closed-Loop Certificate Deployment Pipeline</h2>
+                <span class="panel-description">End-to-end multi-platform lifecycle with automated verification & Day 2 reconciliation</span>
+              </div>
+              <button class="btn btn-primary btn-sm" onclick="switchTab('simulator')">⚡ Launch Live Simulator</button>
+            </div>
+
+            <div class="pipeline-stepper">
+              <div class="step-item completed">
+                <div class="step-circle">1</div>
+                <div class="step-info">
+                  <span class="step-name">Discovery</span>
+                  <span class="step-sub">ServiceNow CMDB</span>
+                </div>
+              </div>
+              <div class="step-arrow">&rarr;</div>
+
+              <div class="step-item completed">
+                <div class="step-circle">2</div>
+                <div class="step-info">
+                  <span class="step-name">CA Sync</span>
+                  <span class="step-sub">Sectigo Cloud</span>
+                </div>
+              </div>
+              <div class="step-arrow">&rarr;</div>
+
+              <div class="step-item active">
+                <div class="step-circle">3</div>
+                <div class="step-info">
+                  <span class="step-name">AI Match</span>
+                  <span class="step-sub">Old &rarr; New Pair</span>
+                </div>
+              </div>
+              <div class="step-arrow">&rarr;</div>
+
+              <div class="step-item">
+                <div class="step-circle">4</div>
+                <div class="step-info">
+                  <span class="step-name">Vault Creds</span>
+                  <span class="step-sub">CyberArk JIT</span>
+                </div>
+              </div>
+              <div class="step-arrow">&rarr;</div>
+
+              <div class="step-item">
+                <div class="step-circle">5</div>
+                <div class="step-info">
+                  <span class="step-name">MID Dispatch</span>
+                  <span class="step-sub">Agent Execution</span>
+                </div>
+              </div>
+              <div class="step-arrow">&rarr;</div>
+
+              <div class="step-item">
+                <div class="step-circle">6</div>
+                <div class="step-info">
+                  <span class="step-name">Live TLS Verify</span>
+                  <span class="step-sub">Direct Handshake</span>
+                </div>
+              </div>
+              <div class="step-arrow">&rarr;</div>
+
+              <div class="step-item">
+                <div class="step-circle">7</div>
+                <div class="step-info">
+                  <span class="step-name">Confirmation</span>
+                  <span class="step-sub">Day 2 CMDB Audit</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             2. E2E SIMULATOR VIEW (Client Showcase)
+             ================================================================ -->
+        <section class="tab-pane" id="tab-simulator">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">Interactive End-to-End Simulation Studio</h2>
+                <span class="panel-description">Simulate the entire Day 1 -> Day 2 closed-loop lifecycle in real-time without touching production servers</span>
+              </div>
+              <button class="btn btn-primary" id="sim-run-btn" onclick="runClientSimulation()">
+                <span>▶️ Run Simulated Renewal Cycle</span>
+              </button>
+            </div>
+
+            <!-- Terminal Output Box -->
+            <div class="sim-console" id="sim-console-output">
+              <div class="console-log-line">
+                <span class="console-time">[READY]</span>
+                <span class="console-tag badge-info">SIMULATOR</span>
+                <span class="console-msg">System initialized. Click "Run Simulated Renewal Cycle" to execute live demonstration.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             3. CERTIFICATES VIEW
+             ================================================================ -->
+        <section class="tab-pane" id="tab-certificates">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">SSL/TLS Certificates</h2>
+                <span class="panel-description">Discovered from ServiceNow CMDB & Sectigo Certificate Authority</span>
+              </div>
+              <div class="panel-controls">
+                <div class="search-input-wrap">
+                  <span class="search-icon">🔍</span>
+                  <input type="text" id="cert-search-input" class="input-field" placeholder="Search by Common Name..." onkeyup="if(event.key==='Enter') loadCertificates()">
+                </div>
+                <select id="cert-status-filter" class="select-field" onchange="loadCertificates()">
+                  <option value="">All Statuses</option>
+                  <option value="ACTIVE">ACTIVE</option>
+                  <option value="EXPIRED">EXPIRED</option>
+                  <option value="REPLACED">REPLACED</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="loadCertificates()">Filter</button>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Common Name / Serial</th>
+                    <th>Source</th>
+                    <th>Status</th>
+                    <th>SHA-256 Thumbprint</th>
+                    <th>Issuer CA</th>
+                    <th>Expires</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="certs-table-body">
+                  <tr><td colspan="7" class="text-center" style="padding: 24px; color: var(--text-muted);">Loading certificate repository...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             4. TARGET SERVERS VIEW
+             ================================================================ -->
+        <section class="tab-pane" id="tab-servers">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">Target Infrastructure Servers</h2>
+                <span class="panel-description">Heterogeneous hosting endpoints: IIS, Apache, Nginx, Tomcat, Java Keystores</span>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Hostname</th>
+                    <th>Technology Stack</th>
+                    <th>Environment</th>
+                    <th>Status</th>
+                    <th>Network Endpoint</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="servers-table-body">
+                  <tr><td colspan="6" class="text-center" style="padding: 24px; color: var(--text-muted);">Loading target servers...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             5. REPLACEMENTS VIEW
+             ================================================================ -->
+        <section class="tab-pane" id="tab-replacements">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">Certificate Replacements & Correlations</h2>
+                <span class="panel-description">Algorithmic Old &rarr; New matching pairs with confidence breakdown</span>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Correlation ID</th>
+                    <th>Expiring Certificate</th>
+                    <th>Renewed Certificate</th>
+                    <th>Match Confidence</th>
+                    <th>Match Determination</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="replacements-table-body">
+                  <tr><td colspan="6" class="text-center" style="padding: 24px; color: var(--text-muted);">Loading correlations...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             6. DEPLOYMENTS VIEW
+             ================================================================ -->
+        <section class="tab-pane" id="tab-deployments">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">Deployment Orchestration Pipeline</h2>
+                <span class="panel-description">Live state machine execution with manual retry & on-demand TLS verification</span>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Job Reference</th>
+                    <th>Target Host</th>
+                    <th>Adapter Type</th>
+                    <th>Orchestration Status</th>
+                    <th>Timestamp</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="deployments-table-body">
+                  <tr><td colspan="6" class="text-center" style="padding: 24px; color: var(--text-muted);">Loading deployments...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             7. MID SERVERS VIEW
+             ================================================================ -->
+        <section class="tab-pane" id="tab-midservers">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">ServiceNow MID Server Fleet</h2>
+                <span class="panel-description">Execution agent nodes facilitating zero-trust internal network deployment</span>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Node Identifier</th>
+                    <th>Health Status</th>
+                    <th>IP Address</th>
+                    <th>Supported Adapters</th>
+                    <th>Diagnostics</th>
+                  </tr>
+                </thead>
+                <tbody id="mid-table-body">
+                  <tr><td colspan="5" class="text-center" style="padding: 24px; color: var(--text-muted);">Loading MID servers...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             8. AUDIT EVENTS VIEW
+             ================================================================ -->
+        <section class="tab-pane" id="tab-audit">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">Immutable Audit Trail & Compliance Log</h2>
+                <span class="panel-description">Append-only compliance records with correlation IDs for SOC-2 / SOX auditability</span>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Timestamp (UTC)</th>
+                    <th>Action</th>
+                    <th>Actor</th>
+                    <th>Outcome</th>
+                    <th>Correlation ID</th>
+                    <th>Payload</th>
+                  </tr>
+                </thead>
+                <tbody id="audit-table-body">
+                  <tr><td colspan="6" class="text-center" style="padding: 24px; color: var(--text-muted);">Loading audit events...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- Inspector Modal -->
+  <div class="modal-overlay" id="inspector-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-title">Item Details</h3>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre class="sim-console" id="modal-json-content" style="height: 300px; color: var(--text-code);"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auth Settings Modal -->
+  <div class="modal-overlay" id="auth-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Authentication Settings</h3>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: var(--text-muted);">Configure HTTP Basic Auth credentials to query CDM REST APIs.</p>
+        <div class="form-group">
+          <label class="form-label" for="auth-username-input">Username</label>
+          <input type="text" id="auth-username-input" class="form-control" value="cdm_admin">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="auth-password-input">Password</label>
+          <input type="password" id="auth-password-input" class="form-control" value="admin_dev_password_change_me">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveAuthCredentials()">Save &amp; Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

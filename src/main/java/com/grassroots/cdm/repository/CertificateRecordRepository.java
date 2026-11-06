@@ -4,6 +4,7 @@ import com.grassroots.cdm.entity.CertificateRecord;
 import com.grassroots.cdm.entity.enums.CertificateSource;
 import com.grassroots.cdm.entity.enums.CertificateStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
@@ -15,7 +16,7 @@ import java.util.UUID;
  * Spring Data JPA repository for CertificateRecord entities.
  */
 @Repository
-public interface CertificateRecordRepository extends JpaRepository<CertificateRecord, UUID> {
+public interface CertificateRecordRepository extends JpaRepository<CertificateRecord, UUID>, JpaSpecificationExecutor<CertificateRecord> {
 
     Optional<CertificateRecord> findByExternalId(String externalId);
 

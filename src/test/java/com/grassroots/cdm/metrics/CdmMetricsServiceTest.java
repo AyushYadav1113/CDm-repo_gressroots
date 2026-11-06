@@ -60,7 +60,7 @@ class CdmMetricsServiceTest {
         assertThat(noMatch).isEqualTo(3.0);
     }
 
-    @Test
+    @Test 
     void recordDeploymentJobCreated_increments_per_technology() {
         metricsService.recordDeploymentJobCreated("IIS");
         metricsService.recordDeploymentJobCreated("IIS");

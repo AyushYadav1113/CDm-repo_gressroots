@@ -2,6 +2,7 @@ package com.grassroots.cdm.repository;
 
 import com.grassroots.cdm.entity.AuditLogRecord;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
@@ -12,7 +13,7 @@ import java.util.UUID;
  * Spring Data JPA repository for immutable AuditLogRecord entities.
  */
 @Repository
-public interface AuditLogRecordRepository extends JpaRepository<AuditLogRecord, UUID> {
+public interface AuditLogRecordRepository extends JpaRepository<AuditLogRecord, UUID>, JpaSpecificationExecutor<AuditLogRecord> {
 
     List<AuditLogRecord> findByCorrelationId(String correlationId);
 

@@ -75,6 +75,8 @@ springdoc:
     tagsSorter: alpha
     tryItOutEnabled: true
 
+# servide now 
+
 cdm:
   servicenow:
     base-url: ${SERVICENOW_BASE_URL:https://example.service-now.com}
@@ -91,6 +93,9 @@ cdm:
     query-filter: ${SERVICENOW_QUERY_FILTER:active=true^ORDERBYDESCsys_updated_on}
     page-size: ${SERVICENOW_PAGE_SIZE:100}
     mock-enabled: ${SERVICENOW_MOCK_ENABLED:false}
+
+    # Sectigo  
+
   sectigo:
     base-url: ${SECTIGO_BASE_URL:https://cert-manager.com/api/v1}
     customer-uri: ${SECTIGO_CUSTOMER_URI:}
@@ -140,6 +145,9 @@ cdm:
     mock-enabled: ${MID_SERVER_MOCK_ENABLED:false}
     jobs-path: ${MID_SERVER_JOBS_PATH:/api/v1/mid/jobs}
     execution-timeout-seconds: ${MID_SERVER_EXECUTION_TIMEOUT_SECONDS:300}
+
+    # cyberark  
+    
   cyberark:
     enabled: ${CYBERARK_ENABLED:true}
     base-url: ${CYBERARK_CCP_URL:https://cyberark.grassroots.internal/AIMWebService}

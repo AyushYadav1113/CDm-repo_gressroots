@@ -5,6 +5,7 @@ import com.grassroots.cdm.entity.enums.EnvironmentType;
 import com.grassroots.cdm.entity.enums.ServerStatus;
 import com.grassroots.cdm.entity.enums.ServerTechnology;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -15,7 +16,7 @@ import java.util.UUID;
  * Spring Data JPA repository for TargetServer entities.
  */
 @Repository
-public interface TargetServerRepository extends JpaRepository<TargetServer, UUID> {
+public interface TargetServerRepository extends JpaRepository<TargetServer, UUID>, JpaSpecificationExecutor<TargetServer> {
 
     Optional<TargetServer> findByHostname(String hostname);
 
